@@ -13,7 +13,7 @@ prompt contents. Chatterbox adds its built-in PerTh watermark to generated audio
 Use the public container:
 
 ```text
-ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:latest
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:sha-acfcada
 ```
 
 Recommended RunPod Serverless settings:
@@ -23,12 +23,30 @@ Recommended RunPod Serverless settings:
 - Active workers: 0
 - Max workers: 1
 - Scaling: queue delay, 1 second
-- Idle timeout: 30 seconds
+- Idle timeout: 5 seconds
 - Execution timeout: 600 seconds
 - FlashBoot: enabled
 - Container disk: at least 20 GB
 
 No network volume or Hugging Face token is required.
+
+## Current deployment
+
+The production scale-to-zero endpoint is:
+
+```text
+Endpoint ID: usexk8jki4y8v3
+Run:         https://api.runpod.ai/v2/usexk8jki4y8v3/run
+Run sync:    https://api.runpod.ai/v2/usexk8jki4y8v3/runsync
+```
+
+It uses one GPU from the `AMPERE_16` pool, with `AMPERE_24` as an
+availability fallback. Minimum workers is 0 and maximum workers is 1.
+
+The first deployment canary took 238 seconds because RunPod had to pull the
+image for the first time. A second request after scale-down completed in
+33 seconds through FlashBoot, confirming that the endpoint returned to zero
+rather than remaining warm.
 
 ## Request contract
 
@@ -66,6 +84,10 @@ WAV, MP3, FLAC, and OGG references are accepted. References are limited to
 10 MiB and text to 2,000 characters. Chatterbox itself requires reference audio
 longer than five seconds.
 
+The worker does not persist or log reference audio. RunPod still handles the
+request and result as platform job data; asynchronous results are retained by
+RunPod for 30 minutes.
+
 The response contains an inline base64 PCM WAV:
 
 ```json
@@ -86,10 +108,11 @@ Use `{"input":{"action":"info"}}` to inspect the live model and GPU.
 
 ## Client
 
-Set the endpoint ID and API key without committing either value:
+Set the endpoint ID and an API key that has AI API access to this specific
+endpoint. Do not commit the key:
 
 ```bash
-export CHATTERBOX_ENDPOINT_ID="your-endpoint-id"
+export CHATTERBOX_ENDPOINT_ID="usexk8jki4y8v3"
 export RUNPOD_API_KEY="your-runpod-api-key"
 python3 scripts/chatterbox_client.py \
   "This is a live Chatterbox test." \
@@ -107,4 +130,3 @@ The unit tests do not load the GPU model:
 python3 -m unittest -v
 python3 -m py_compile handler.py scripts/chatterbox_client.py
 ```
-

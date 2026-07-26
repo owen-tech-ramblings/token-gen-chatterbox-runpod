@@ -1,4 +1,5 @@
 chatterbox-tts==0.1.7
-runpod==1.11.0
+# 1.10+ requires tomlkit>=0.15, while Chatterbox's pinned Gradio 6.8
+# requires tomlkit<0.14. The 1.9 handler API is compatible with this worker.
+runpod==1.9.0
 soundfile==0.13.1
-

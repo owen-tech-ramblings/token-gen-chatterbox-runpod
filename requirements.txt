@@ -1,0 +1,4 @@
+chatterbox-tts==0.1.7
+runpod==1.11.0
+soundfile==0.13.1
+

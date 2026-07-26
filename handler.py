@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 from typing import Any
@@ -38,6 +39,10 @@ _MIME_FORMATS = {
     "audio/flac": "flac",
     "audio/x-flac": "flac",
     "audio/ogg": "ogg",
+}
+_OUTPUT_FORMATS = {
+    "wav": ("audio/wav", ".wav"),
+    "mp3": ("audio/mpeg", ".mp3"),
 }
 
 
@@ -230,6 +235,39 @@ def _save_wave(waveform: Any, sample_rate: int, path: Path) -> float:
     return float(samples.size / sample_rate)
 
 
+def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
+    """Encode a generated PCM WAV as a broadly compatible constant-bitrate MP3."""
+
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(wave_path),
+                "-map_metadata",
+                "-1",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "128k",
+                str(mp3_path),
+            ],
+            check=True,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("MP3 output is unavailable because ffmpeg is missing") from exc
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("failed to encode generated audio as MP3") from exc
+    if not mp3_path.is_file() or mp3_path.stat().st_size <= 0:
+        raise RuntimeError("MP3 encoder returned an empty output")
+
+
 def _info(runtime: ChatterboxRuntime) -> dict[str, Any]:
     return {
         "model": MODEL_LABEL,
@@ -243,6 +281,7 @@ def _info(runtime: ChatterboxRuntime) -> dict[str, Any]:
         "max_text_chars": MAX_TEXT_CHARS,
         "max_reference_bytes": MAX_REFERENCE_BYTES,
         "accepted_reference_formats": ["wav", "mp3", "flac", "ogg"],
+        "output_formats": list(_OUTPUT_FORMATS),
     }
 
 
@@ -269,6 +308,12 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
     )
     normalize_loudness = _boolean(data, "normalize_loudness", True)
     reference = decode_reference(data)
+    output_format = data.get("output_format", "wav")
+    if not isinstance(output_format, str):
+        raise InputError("output_format must be a string")
+    output_format = output_format.lower().lstrip(".")
+    if output_format not in _OUTPUT_FORMATS:
+        raise InputError("output_format must be 'wav' or 'mp3'")
 
     with tempfile.TemporaryDirectory(prefix="chatterbox-job-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -278,7 +323,7 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
             reference_path = temp_path / f"reference{extension}"
             reference_path.write_bytes(reference_bytes)
 
-        output_path = temp_path / "output.wav"
+        wave_path = temp_path / "output.wav"
         with _generation_lock:
             waveform = runtime.generate(
                 text,
@@ -290,7 +335,11 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
                 repetition_penalty=repetition_penalty,
                 normalize_loudness=normalize_loudness,
             )
-        duration = _save_wave(waveform, runtime.sample_rate, output_path)
+        duration = _save_wave(waveform, runtime.sample_rate, wave_path)
+        mime_type, extension = _OUTPUT_FORMATS[output_format]
+        output_path = temp_path / f"output{extension}"
+        if output_format == "mp3":
+            _encode_mp3(wave_path, output_path)
         audio = output_path.read_bytes()
 
     if len(audio) > MAX_AUDIO_BYTES:
@@ -301,7 +350,8 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
 
     return {
         "audio_base64": base64.b64encode(audio).decode("ascii"),
-        "mime_type": "audio/wav",
+        "mime_type": mime_type,
+        "output_format": output_format,
         "sample_rate": runtime.sample_rate,
         "duration_seconds": round(duration, 3),
         "sha256": hashlib.sha256(audio).hexdigest(),
@@ -327,4 +377,3 @@ if __name__ == "__main__":
     import runpod
 
     runpod.serverless.start({"handler": handler})
-

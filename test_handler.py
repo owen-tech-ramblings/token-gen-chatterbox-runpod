@@ -28,6 +28,10 @@ def fake_save_wave(_waveform, sample_rate: int, path: Path) -> float:
     return 1.25
 
 
+def fake_encode_mp3(_wave_path: Path, mp3_path: Path) -> None:
+    mp3_path.write_bytes(b"ID3-test-audio")
+
+
 class HandlerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
@@ -45,8 +49,20 @@ class HandlerTests(unittest.TestCase):
         )
         self.assertEqual(base64.b64decode(result["audio_base64"]), b"RIFF-test-audio")
         self.assertEqual(result["duration_seconds"], 1.25)
+        self.assertEqual(result["mime_type"], "audio/wav")
+        self.assertEqual(result["output_format"], "wav")
         self.assertFalse(result["used_reference_voice"])
         self.assertEqual(self.runtime.calls[0][2]["seed"], 42)
+
+    @patch("handler._encode_mp3", fake_encode_mp3)
+    @patch("handler._save_wave", fake_save_wave)
+    def test_generate_mp3(self) -> None:
+        result = handler.handle_input(
+            {"text": "Return an MP3.", "output_format": "mp3"}, self.runtime
+        )
+        self.assertEqual(base64.b64decode(result["audio_base64"]), b"ID3-test-audio")
+        self.assertEqual(result["mime_type"], "audio/mpeg")
+        self.assertEqual(result["output_format"], "mp3")
 
     @patch("handler._save_wave", fake_save_wave)
     def test_generate_with_reference_voice(self) -> None:
@@ -81,6 +97,7 @@ class HandlerTests(unittest.TestCase):
             {"text": "hello", "temperature": "hot"},
             {"text": "hello", "top_p": 2},
             {"text": "hello", "reference_audio": "not-base64"},
+            {"text": "hello", "output_format": "flac"},
             {"action": "delete"},
         ]
         for value in invalid_inputs:
@@ -108,4 +125,3 @@ class HandlerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -43,6 +43,11 @@ def main() -> int:
     parser.add_argument("text", help="English text to synthesize")
     parser.add_argument("--reference", type=Path, help="5-10 second voice clip")
     parser.add_argument("--output", type=Path, default=Path("chatterbox-output.wav"))
+    parser.add_argument(
+        "--format",
+        choices=("wav", "mp3"),
+        help="Output format; defaults to the --output extension or WAV",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
@@ -52,7 +57,17 @@ def main() -> int:
     if not key or not endpoint_id:
         parser.error("RUNPOD_API_KEY and CHATTERBOX_ENDPOINT_ID must be set")
 
-    job_input: dict = {"text": args.text, "seed": args.seed}
+    output_format = args.format
+    if output_format is None:
+        output_format = args.output.suffix.lower().lstrip(".") or "wav"
+    if output_format not in {"wav", "mp3"}:
+        parser.error("--output must end in .wav or .mp3 unless --format is supplied")
+
+    job_input: dict = {
+        "text": args.text,
+        "seed": args.seed,
+        "output_format": output_format,
+    }
     if args.reference:
         content_type = mimetypes.guess_type(args.reference.name)[0] or "audio/wav"
         job_input["reference_audio"] = {
@@ -82,6 +97,8 @@ def main() -> int:
         raise RuntimeError(f"job {job_id} ended as {state}: {status.get('error')}")
 
     output = status.get("output") or {}
+    if output.get("output_format") not in (None, output_format):
+        raise RuntimeError("Chatterbox returned an unexpected audio format")
     audio = base64.b64decode(output["audio_base64"], validate=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(audio)
@@ -98,4 +115,3 @@ if __name__ == "__main__":
     except (RuntimeError, TimeoutError, OSError, KeyError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1)
-

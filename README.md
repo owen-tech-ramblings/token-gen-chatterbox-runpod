@@ -4,7 +4,7 @@ A scale-to-zero RunPod worker for English text-to-speech and zero-shot voice
 cloning with Resemble AI's Chatterbox Turbo model.
 
 The model weights are baked into the container to reduce cold-start time.
-Reference audio and generated WAV files are written only to a per-job temporary
+Reference audio and generated WAV/MP3 files are written only to a per-job temporary
 directory and removed before the handler returns. The worker never logs audio or
 prompt contents. Chatterbox adds its built-in PerTh watermark to generated audio.
 
@@ -61,7 +61,8 @@ The default action is `generate`:
     "top_p": 0.95,
     "top_k": 1000,
     "repetition_penalty": 1.2,
-    "normalize_loudness": true
+    "normalize_loudness": true,
+    "output_format": "mp3"
   }
 }
 ```
@@ -88,12 +89,14 @@ The worker does not persist or log reference audio. RunPod still handles the
 request and result as platform job data; asynchronous results are retained by
 RunPod for 30 minutes.
 
-The response contains an inline base64 PCM WAV:
+`output_format` may be `wav` (the default) or `mp3`. MP3 output is encoded at
+128 kbit/s. The response contains inline base64 audio:
 
 ```json
 {
-  "audio_base64": "<base64 WAV>",
-  "mime_type": "audio/wav",
+  "audio_base64": "<base64 audio>",
+  "mime_type": "audio/mpeg",
+  "output_format": "mp3",
   "sample_rate": 24000,
   "duration_seconds": 2.5,
   "sha256": "...",
@@ -116,7 +119,7 @@ export CHATTERBOX_ENDPOINT_ID="usexk8jki4y8v3"
 export RUNPOD_API_KEY="your-runpod-api-key"
 python3 scripts/chatterbox_client.py \
   "This is a live Chatterbox test." \
-  --output canary-output/test.wav
+  --output canary-output/test.mp3
 ```
 
 Add `--reference voice.wav` to exercise voice cloning. The client uses the

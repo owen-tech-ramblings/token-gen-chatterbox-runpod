@@ -73,10 +73,12 @@ The default action is `generate`:
 }
 ```
 
-`publication` is the default. It uses conservative sampling and splits long
-inputs at English sentence boundaries before generation. `balanced` keeps the
-upstream Turbo sampling defaults, while `expressive` is intended for deliberate
-character performance. Explicit sampling values override the selected preset.
+`publication` is the default. It uses conservative sampling, splits long inputs
+at English sentence boundaries before generation, and masters the result to
+-19 LUFS with a -1.5 dB true-peak ceiling for consistent mono spoken-word audio.
+`balanced` keeps the upstream Turbo sampling defaults, while `expressive` is
+intended for deliberate character performance. Explicit sampling values
+override the selected preset.
 
 For voice cloning, add a clean 5-10 second reference clip:
 
@@ -101,7 +103,8 @@ request and result as platform job data; asynchronous results are retained by
 RunPod for 30 minutes.
 
 `output_format` may be `wav` (the default) or `mp3`. MP3 output is encoded at
-192 kbit/s. The response contains inline base64 audio:
+160 kbit/s, the maximum MPEG-2 Layer III rate at the model's native 24 kHz
+sample rate. The response contains inline base64 audio:
 
 ```json
 {
@@ -115,6 +118,7 @@ RunPod for 30 minutes.
   "seed": 42,
   "quality_preset": "publication",
   "segment_count": 1,
+  "mastering": "podcast_mono_-19_lufs",
   "used_reference_voice": false,
   "watermarked": true
 }

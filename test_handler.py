@@ -35,6 +35,9 @@ def fake_encode_mp3(_wave_path: Path, mp3_path: Path) -> None:
 class HandlerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
+        master_patcher = patch("handler._master_wave")
+        self.master_wave = master_patcher.start()
+        self.addCleanup(master_patcher.stop)
 
     def test_info(self) -> None:
         result = handler.handle_input({"action": "info"}, self.runtime)
@@ -57,6 +60,8 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(self.runtime.calls[0][2]["seed"], 42)
         self.assertEqual(result["quality_preset"], "publication")
         self.assertEqual(self.runtime.calls[0][2]["temperature"], 0.65)
+        self.assertEqual(result["mastering"], "podcast_mono_-19_lufs")
+        self.master_wave.assert_called_once()
 
     @patch("handler._encode_mp3", fake_encode_mp3)
     @patch("handler._save_wave", fake_save_wave)
@@ -149,6 +154,7 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(options["temperature"], 0.8)
         self.assertEqual(options["top_p"], 0.95)
         self.assertEqual(options["top_k"], 1000)
+        self.assertIsNone(result["mastering"])
 
 
 if __name__ == "__main__":

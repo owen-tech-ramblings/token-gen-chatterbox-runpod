@@ -33,6 +33,7 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 360,
         "segment_pause_ms": 140,
+        "master_output": True,
     },
     "balanced": {
         "temperature": 0.80,
@@ -42,6 +43,7 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 700,
         "segment_pause_ms": 120,
+        "master_output": False,
     },
     "expressive": {
         "temperature": 0.90,
@@ -51,6 +53,7 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 360,
         "segment_pause_ms": 120,
+        "master_output": False,
     },
 }
 if DEFAULT_QUALITY_PRESET not in QUALITY_PRESETS:
@@ -353,7 +356,9 @@ def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
                 "-codec:a",
                 "libmp3lame",
                 "-b:a",
-                "192k",
+                # 160 kbit/s is the maximum MPEG-2 Layer III rate at the
+                # model's native 24 kHz sample rate.
+                "160k",
                 str(mp3_path),
             ],
             check=True,
@@ -365,6 +370,43 @@ def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
         raise RuntimeError("failed to encode generated audio as MP3") from exc
     if not mp3_path.is_file() or mp3_path.stat().st_size <= 0:
         raise RuntimeError("MP3 encoder returned an empty output")
+
+
+def _master_wave(wave_path: Path, sample_rate: int) -> None:
+    """Apply a consistent mono spoken-word master for publication output."""
+
+    mastered_path = wave_path.with_name("mastered.wav")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-i",
+                str(wave_path),
+                "-af",
+                "loudnorm=I=-19:TP=-1.5:LRA=7",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-codec:a",
+                "pcm_s16le",
+                str(mastered_path),
+            ],
+            check=True,
+            timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("publication mastering is unavailable because ffmpeg is missing") from exc
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("failed to master generated publication audio") from exc
+    if not mastered_path.is_file() or mastered_path.stat().st_size <= 0:
+        raise RuntimeError("publication mastering returned an empty output")
+    mastered_path.replace(wave_path)
 
 
 def _info(runtime: ChatterboxRuntime) -> dict[str, Any]:
@@ -454,6 +496,8 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
                 segment_pause_ms=preset["segment_pause_ms"],
             )
         duration = _save_wave(waveform, runtime.sample_rate, wave_path)
+        if preset["master_output"]:
+            _master_wave(wave_path, runtime.sample_rate)
         mime_type, extension = _OUTPUT_FORMATS[output_format]
         output_path = temp_path / f"output{extension}"
         if output_format == "mp3":
@@ -477,6 +521,7 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
         "seed": seed,
         "quality_preset": preset_name,
         "segment_count": len(split_text_segments(text, preset["max_segment_chars"])),
+        "mastering": "podcast_mono_-19_lufs" if preset["master_output"] else None,
         "used_reference_voice": reference is not None,
         "watermarked": True,
     }

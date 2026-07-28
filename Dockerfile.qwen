@@ -29,6 +29,7 @@ RUN apt-get update \
         libsndfile1 \
         python3 \
         python3-pip \
+        sox \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install \
@@ -38,6 +39,12 @@ RUN python3 -m pip install \
 
 WORKDIR /app
 COPY requirements-qwen.txt .
+RUN python3 -m pip install \
+        --upgrade \
+        pip \
+        setuptools \
+        wheel \
+        numpy==1.26.4
 RUN python3 -m pip install --requirement requirements-qwen.txt
 
 # Pin and bake the complete public model so scale-to-zero cold starts never

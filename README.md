@@ -13,7 +13,7 @@ prompt contents. Chatterbox adds its built-in PerTh watermark to generated audio
 Use the public container:
 
 ```text
-ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:sha-c71bc70
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:sha-32d9488
 ```
 
 Recommended RunPod Serverless settings:
@@ -43,10 +43,9 @@ Run sync:    https://api.runpod.ai/v2/usexk8jki4y8v3/runsync
 It uses one GPU from the `AMPERE_16` pool, with `AMPERE_24` as an
 availability fallback. Minimum workers is 0 and maximum workers is 1.
 
-The native-MP3 image is published as `sha-c71bc70`. Until the endpoint template
-is rolled to that tag, the Token-Gen API remains backward compatible by
-detecting the prior worker's PCM WAV response and encoding requested MP3 output
-at the gateway.
+The live endpoint uses `sha-32d9488`, with the `publication` quality preset,
+sentence-aware long-form generation, native 160-kbit/s MP3, and consistent mono
+spoken-word mastering.
 
 The first deployment canary took 238 seconds because RunPod had to pull the
 image for the first time. A second request after scale-down completed in

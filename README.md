@@ -39,8 +39,8 @@ No network volume or Hugging Face token is required.
 
 ## Qwen3-TTS trial images
 
-Run the `Publish Qwen3-TTS RunPod worker` GitHub workflow with either `design`
-or `base`. It publishes a commit-addressed tag:
+The `Publish Qwen3-TTS RunPod worker` GitHub workflow builds both `design` and
+`base` variants. It publishes commit-addressed tags:
 
 ```text
 ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-design-<commit>

@@ -1,0 +1,55 @@
+name: Publish Qwen3-TTS RunPod worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Qwen3-TTS model variant
+        type: choice
+        required: true
+        default: base
+        options:
+          - base
+          - design
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: model
+        shell: bash
+        run: |
+          if [[ "${{ inputs.variant }}" == "design" ]]; then
+            echo "id=Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign" >> "$GITHUB_OUTPUT"
+            echo "revision=5ecdb67327fd37bb2e042aab12ff7391903235d3" >> "$GITHUB_OUTPUT"
+          else
+            echo "id=Qwen/Qwen3-TTS-12Hz-1.7B-Base" >> "$GITHUB_OUTPUT"
+            echo "revision=fd4b254389122332181a7c3db7f27e918eec64e3" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.qwen
+          push: true
+          tags: ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-${{ inputs.variant }}-${{ github.sha }}
+          build-args: |
+            MODEL_VARIANT=${{ inputs.variant }}
+            MODEL_ID=${{ steps.model.outputs.id }}
+            MODEL_REVISION=${{ steps.model.outputs.revision }}
+          cache-from: type=gha,scope=qwen3-${{ inputs.variant }}
+          cache-to: type=gha,mode=max,scope=qwen3-${{ inputs.variant }}

@@ -1,7 +1,14 @@
-# Chatterbox Turbo on RunPod Serverless
+# Token-Gen TTS on RunPod Serverless
 
 A scale-to-zero RunPod worker for English text-to-speech and zero-shot voice
 cloning with Resemble AI's Chatterbox Turbo model.
+
+The repository also contains a reversible Qwen3-TTS 1.7B trial. The Qwen Base
+worker uses a reference recording plus its exact transcript for higher-fidelity
+voice cloning; the separate VoiceDesign image creates original synthetic voice
+references. Both image variants are built from `Dockerfile.qwen` and are
+deployed to the same TTS endpoint at different stages, so the trial does not
+create another billable RunPod endpoint.
 
 The model weights are baked into the container to reduce cold-start time.
 Reference audio and generated WAV/MP3 files are written only to a per-job temporary
@@ -29,6 +36,47 @@ Recommended RunPod Serverless settings:
 - Container disk: at least 20 GB
 
 No network volume or Hugging Face token is required.
+
+## Qwen3-TTS trial images
+
+Run the `Publish Qwen3-TTS RunPod worker` GitHub workflow with either `design`
+or `base`. It publishes a commit-addressed tag:
+
+```text
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-design-<commit>
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-base-<commit>
+```
+
+The 1.7B model and tokenizer are pinned and baked into each image. The worker
+uses BF16 on supported GPUs, PyTorch SDPA for broad Ampere compatibility, one
+request at a time, and the same WAV/MP3 and spoken-word mastering contract as
+the Chatterbox worker.
+
+High-quality Qwen cloning supplies both fields:
+
+```json
+{
+  "input": {
+    "text": "This uses the exact-transcript clone.",
+    "reference_audio": {
+      "base64": "<base64 audio>",
+      "content_type": "audio/wav"
+    },
+    "reference_text": "The exact words spoken in the reference recording.",
+    "x_vector_only_mode": false,
+    "quality_preset": "publication",
+    "output_format": "mp3"
+  }
+}
+```
+
+Legacy profiles without a transcript remain usable with
+`x_vector_only_mode: true`, but the response reports
+`clone_mode: speaker_embedding` because that path has lower cloning fidelity.
+
+The VoiceDesign image accepts `action: design` and a `voice_description`.
+Designed clips are references for the Base image; VoiceDesign is not the
+long-term production image.
 
 ## Current deployment
 
@@ -146,6 +194,6 @@ asynchronous RunPod API so it can wait through a scale-to-zero cold start.
 The unit tests do not load the GPU model:
 
 ```bash
-python3 -m unittest -v
-python3 -m py_compile handler.py scripts/chatterbox_client.py
+python3 -m unittest -v test_handler.py test_qwen_handler.py
+python3 -m py_compile handler.py qwen_handler.py scripts/chatterbox_client.py
 ```

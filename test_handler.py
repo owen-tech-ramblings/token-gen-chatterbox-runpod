@@ -35,12 +35,17 @@ def fake_encode_mp3(_wave_path: Path, mp3_path: Path) -> None:
 class HandlerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
+        master_patcher = patch("handler._master_wave")
+        self.master_wave = master_patcher.start()
+        self.addCleanup(master_patcher.stop)
 
     def test_info(self) -> None:
         result = handler.handle_input({"action": "info"}, self.runtime)
         self.assertEqual(result["model"], "chatterbox-turbo")
         self.assertEqual(result["gpu"], "Fake GPU")
         self.assertTrue(result["voice_cloning"])
+        self.assertEqual(result["default_quality_preset"], "publication")
+        self.assertIn("publication", result["quality_presets"])
 
     @patch("handler._save_wave", fake_save_wave)
     def test_generate_with_builtin_voice(self) -> None:
@@ -53,6 +58,10 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(result["output_format"], "wav")
         self.assertFalse(result["used_reference_voice"])
         self.assertEqual(self.runtime.calls[0][2]["seed"], 42)
+        self.assertEqual(result["quality_preset"], "publication")
+        self.assertEqual(self.runtime.calls[0][2]["temperature"], 0.65)
+        self.assertEqual(result["mastering"], "podcast_mono_-19_lufs")
+        self.master_wave.assert_called_once()
 
     @patch("handler._encode_mp3", fake_encode_mp3)
     @patch("handler._save_wave", fake_save_wave)
@@ -98,6 +107,7 @@ class HandlerTests(unittest.TestCase):
             {"text": "hello", "top_p": 2},
             {"text": "hello", "reference_audio": "not-base64"},
             {"text": "hello", "output_format": "flac"},
+            {"text": "hello", "quality_preset": "perfect-magic"},
             {"action": "delete"},
         ]
         for value in invalid_inputs:
@@ -121,6 +131,30 @@ class HandlerTests(unittest.TestCase):
             )
         self.assertIsNotNone(seen_path)
         self.assertFalse(Path(seen_path).exists())
+
+    def test_publication_preset_splits_at_sentence_boundaries(self) -> None:
+        text = (
+            "This is the first sentence. "
+            "This is the second sentence with a little more detail. "
+            "This is the final sentence."
+        )
+        segments = handler.split_text_segments(text, 90)
+        self.assertGreater(len(segments), 1)
+        self.assertEqual(" ".join(segments), text)
+        self.assertTrue(segments[0].endswith("."))
+
+    @patch("handler._save_wave", fake_save_wave)
+    def test_balanced_preset_retains_upstream_sampling_defaults(self) -> None:
+        result = handler.handle_input(
+            {"text": "A balanced voice.", "quality_preset": "balanced"},
+            self.runtime,
+        )
+        options = self.runtime.calls[0][2]
+        self.assertEqual(result["quality_preset"], "balanced")
+        self.assertEqual(options["temperature"], 0.8)
+        self.assertEqual(options["top_p"], 0.95)
+        self.assertEqual(options["top_k"], 1000)
+        self.assertIsNone(result["mastering"])
 
 
 if __name__ == "__main__":

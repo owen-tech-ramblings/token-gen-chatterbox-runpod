@@ -1,0 +1,57 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SOURCE_REPOSITORY=https://github.com/owen-tech-ramblings/token-gen-chatterbox-runpod
+ARG MODEL_VARIANT=base
+ARG MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-Base
+ARG MODEL_REVISION=fd4b254389122332181a7c3db7f27e918eec64e3
+
+LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
+LABEL org.opencontainers.image.description="Qwen3-TTS 1.7B worker for RunPod Serverless"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/models/huggingface \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_XET=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    QWEN_MODEL_PATH=/models/qwen/model \
+    QWEN_MODEL_VARIANT=${MODEL_VARIANT} \
+    QWEN_MODEL_ID=${MODEL_ID} \
+    QWEN_ATTN_IMPLEMENTATION=sdpa
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        libsndfile1 \
+        python3 \
+        python3-pip \
+        sox \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install \
+        --index-url https://download.pytorch.org/whl/cu124 \
+        torch==2.6.0 \
+        torchaudio==2.6.0
+
+WORKDIR /app
+COPY requirements-qwen.txt .
+RUN python3 -m pip install \
+        --upgrade \
+        pip \
+        setuptools \
+        wheel \
+        numpy==1.26.4
+RUN python3 -m pip install --requirement requirements-qwen.txt
+
+# Pin and bake the complete public model so scale-to-zero cold starts never
+# depend on a live Hugging Face download.
+RUN TRANSFORMERS_OFFLINE=0 python3 -c \
+    "from huggingface_hub import snapshot_download; snapshot_download(repo_id='${MODEL_ID}', revision='${MODEL_REVISION}', local_dir='/models/qwen/model')"
+
+COPY qwen_handler.py .
+
+CMD ["python3", "-u", "qwen_handler.py"]

@@ -1,7 +1,14 @@
-# Chatterbox Turbo on RunPod Serverless
+# Token-Gen TTS on RunPod Serverless
 
 A scale-to-zero RunPod worker for English text-to-speech and zero-shot voice
 cloning with Resemble AI's Chatterbox Turbo model.
+
+The repository also contains a reversible Qwen3-TTS 1.7B trial. The Qwen Base
+worker uses a reference recording plus its exact transcript for higher-fidelity
+voice cloning; the separate VoiceDesign image creates original synthetic voice
+references. Both image variants are built from `Dockerfile.qwen` and are
+deployed to the same TTS endpoint at different stages, so the trial does not
+create another billable RunPod endpoint.
 
 The model weights are baked into the container to reduce cold-start time.
 Reference audio and generated WAV/MP3 files are written only to a per-job temporary
@@ -13,7 +20,7 @@ prompt contents. Chatterbox adds its built-in PerTh watermark to generated audio
 Use the public container:
 
 ```text
-ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:sha-c71bc70
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:sha-32d9488
 ```
 
 Recommended RunPod Serverless settings:
@@ -30,6 +37,47 @@ Recommended RunPod Serverless settings:
 
 No network volume or Hugging Face token is required.
 
+## Qwen3-TTS trial images
+
+The `Publish Qwen3-TTS RunPod worker` GitHub workflow builds both `design` and
+`base` variants. It publishes commit-addressed tags:
+
+```text
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-design-<commit>
+ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod:qwen3-base-<commit>
+```
+
+The 1.7B model and tokenizer are pinned and baked into each image. The worker
+uses BF16 on supported GPUs, PyTorch SDPA for broad Ampere compatibility, one
+request at a time, and the same WAV/MP3 and spoken-word mastering contract as
+the Chatterbox worker.
+
+High-quality Qwen cloning supplies both fields:
+
+```json
+{
+  "input": {
+    "text": "This uses the exact-transcript clone.",
+    "reference_audio": {
+      "base64": "<base64 audio>",
+      "content_type": "audio/wav"
+    },
+    "reference_text": "The exact words spoken in the reference recording.",
+    "x_vector_only_mode": false,
+    "quality_preset": "publication",
+    "output_format": "mp3"
+  }
+}
+```
+
+Legacy profiles without a transcript remain usable with
+`x_vector_only_mode: true`, but the response reports
+`clone_mode: speaker_embedding` because that path has lower cloning fidelity.
+
+The VoiceDesign image accepts `action: design` and a `voice_description`.
+Designed clips are references for the Base image; VoiceDesign is not the
+long-term production image.
+
 ## Current deployment
 
 The production scale-to-zero endpoint is:
@@ -43,10 +91,9 @@ Run sync:    https://api.runpod.ai/v2/usexk8jki4y8v3/runsync
 It uses one GPU from the `AMPERE_16` pool, with `AMPERE_24` as an
 availability fallback. Minimum workers is 0 and maximum workers is 1.
 
-The native-MP3 image is published as `sha-c71bc70`. Until the endpoint template
-is rolled to that tag, the Token-Gen API remains backward compatible by
-detecting the prior worker's PCM WAV response and encoding requested MP3 output
-at the gateway.
+The live endpoint uses `sha-32d9488`, with the `publication` quality preset,
+sentence-aware long-form generation, native 160-kbit/s MP3, and consistent mono
+spoken-word mastering.
 
 The first deployment canary took 238 seconds because RunPod had to pull the
 image for the first time. A second request after scale-down completed in
@@ -61,16 +108,24 @@ The default action is `generate`:
 {
   "input": {
     "text": "Hello from Chatterbox [chuckle].",
+    "quality_preset": "publication",
     "seed": 42,
-    "temperature": 0.8,
-    "top_p": 0.95,
-    "top_k": 1000,
+    "temperature": 0.65,
+    "top_p": 0.90,
+    "top_k": 500,
     "repetition_penalty": 1.2,
     "normalize_loudness": true,
     "output_format": "mp3"
   }
 }
 ```
+
+`publication` is the default. It uses conservative sampling, splits long inputs
+at English sentence boundaries before generation, and masters the result to
+-19 LUFS with a -1.5 dB true-peak ceiling for consistent mono spoken-word audio.
+`balanced` keeps the upstream Turbo sampling defaults, while `expressive` is
+intended for deliberate character performance. Explicit sampling values
+override the selected preset.
 
 For voice cloning, add a clean 5-10 second reference clip:
 
@@ -95,7 +150,8 @@ request and result as platform job data; asynchronous results are retained by
 RunPod for 30 minutes.
 
 `output_format` may be `wav` (the default) or `mp3`. MP3 output is encoded at
-128 kbit/s. The response contains inline base64 audio:
+160 kbit/s, the maximum MPEG-2 Layer III rate at the model's native 24 kHz
+sample rate. The response contains inline base64 audio:
 
 ```json
 {
@@ -107,6 +163,9 @@ RunPod for 30 minutes.
   "sha256": "...",
   "model": "chatterbox-turbo",
   "seed": 42,
+  "quality_preset": "publication",
+  "segment_count": 1,
+  "mastering": "podcast_mono_-19_lufs",
   "used_reference_voice": false,
   "watermarked": true
 }
@@ -135,6 +194,6 @@ asynchronous RunPod API so it can wait through a scale-to-zero cold start.
 The unit tests do not load the GPU model:
 
 ```bash
-python3 -m unittest -v
-python3 -m py_compile handler.py scripts/chatterbox_client.py
+python3 -m unittest -v test_handler.py test_qwen_handler.py
+python3 -m py_compile handler.py qwen_handler.py scripts/chatterbox_client.py
 ```

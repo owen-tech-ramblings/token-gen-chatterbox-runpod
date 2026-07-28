@@ -61,16 +61,22 @@ The default action is `generate`:
 {
   "input": {
     "text": "Hello from Chatterbox [chuckle].",
+    "quality_preset": "publication",
     "seed": 42,
-    "temperature": 0.8,
-    "top_p": 0.95,
-    "top_k": 1000,
+    "temperature": 0.65,
+    "top_p": 0.90,
+    "top_k": 500,
     "repetition_penalty": 1.2,
     "normalize_loudness": true,
     "output_format": "mp3"
   }
 }
 ```
+
+`publication` is the default. It uses conservative sampling and splits long
+inputs at English sentence boundaries before generation. `balanced` keeps the
+upstream Turbo sampling defaults, while `expressive` is intended for deliberate
+character performance. Explicit sampling values override the selected preset.
 
 For voice cloning, add a clean 5-10 second reference clip:
 
@@ -95,7 +101,7 @@ request and result as platform job data; asynchronous results are retained by
 RunPod for 30 minutes.
 
 `output_format` may be `wav` (the default) or `mp3`. MP3 output is encoded at
-128 kbit/s. The response contains inline base64 audio:
+192 kbit/s. The response contains inline base64 audio:
 
 ```json
 {
@@ -107,6 +113,8 @@ RunPod for 30 minutes.
   "sha256": "...",
   "model": "chatterbox-turbo",
   "seed": 42,
+  "quality_preset": "publication",
+  "segment_count": 1,
   "used_reference_voice": false,
   "watermarked": true
 }

@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -18,6 +19,42 @@ MODEL_LABEL = "chatterbox-turbo"
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "2000"))
 MAX_REFERENCE_BYTES = int(os.getenv("MAX_REFERENCE_BYTES", str(10 * 1024 * 1024)))
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(14 * 1024 * 1024)))
+DEFAULT_QUALITY_PRESET = os.getenv("DEFAULT_QUALITY_PRESET", "publication").strip().lower()
+
+# Turbo is a stochastic speech-token model. Its upstream defaults are useful for
+# expressive agents, but a less adventurous sampling envelope and shorter
+# sentence-aware segments are safer for narration that may be published.
+QUALITY_PRESETS = {
+    "publication": {
+        "temperature": 0.65,
+        "top_p": 0.90,
+        "top_k": 500,
+        "repetition_penalty": 1.20,
+        "normalize_loudness": True,
+        "max_segment_chars": 360,
+        "segment_pause_ms": 140,
+    },
+    "balanced": {
+        "temperature": 0.80,
+        "top_p": 0.95,
+        "top_k": 1000,
+        "repetition_penalty": 1.20,
+        "normalize_loudness": True,
+        "max_segment_chars": 700,
+        "segment_pause_ms": 120,
+    },
+    "expressive": {
+        "temperature": 0.90,
+        "top_p": 0.97,
+        "top_k": 1000,
+        "repetition_penalty": 1.15,
+        "normalize_loudness": True,
+        "max_segment_chars": 360,
+        "segment_pause_ms": 120,
+    },
+}
+if DEFAULT_QUALITY_PRESET not in QUALITY_PRESETS:
+    DEFAULT_QUALITY_PRESET = "publication"
 
 _runtime: ChatterboxRuntime | None = None
 _runtime_lock = threading.Lock()
@@ -48,6 +85,43 @@ _OUTPUT_FORMATS = {
 
 class InputError(ValueError):
     """Raised when a request cannot be safely processed."""
+
+
+def split_text_segments(text: str, maximum: int) -> list[str]:
+    """Split long text at natural English boundaries for stable generation."""
+
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return []
+    segments: list[str] = []
+    remaining = normalized
+    while len(remaining) > maximum:
+        window = remaining[: maximum + 1]
+        boundary = -1
+        include_boundary = False
+        for markers in ((". ", "? ", "! "), ("; ", ": "), (", ",), (" ",)):
+            candidates = [
+                (window.rfind(marker), marker)
+                for marker in markers
+                if window.rfind(marker) >= maximum // 2
+            ]
+            if candidates:
+                boundary, marker = max(candidates)
+                include_boundary = marker in (". ", "? ", "!")
+                break
+        if boundary < 0:
+            boundary = maximum
+        elif include_boundary:
+            boundary += 1
+        segment = remaining[:boundary].strip()
+        if not segment:
+            boundary = maximum
+            segment = remaining[:boundary].strip()
+        segments.append(segment)
+        remaining = remaining[boundary:].strip()
+    if remaining:
+        segments.append(remaining)
+    return segments
 
 
 class ChatterboxRuntime:
@@ -82,26 +156,51 @@ class ChatterboxRuntime:
         top_k: int,
         repetition_penalty: float,
         normalize_loudness: bool,
+        max_segment_chars: int,
+        segment_pause_ms: int,
     ) -> Any:
         if reference_path is None and not self.has_builtin_voice:
             raise InputError(
                 "reference_audio is required because this model image has no built-in voice"
             )
 
-        self.torch.manual_seed(seed)
-        self.torch.cuda.manual_seed_all(seed)
+        segments = split_text_segments(text, max_segment_chars)
         self.model.conds = self._builtin_conditionals
         try:
-            with self.torch.inference_mode():
-                return self.model.generate(
-                    text,
-                    audio_prompt_path=reference_path,
-                    temperature=temperature,
-                    top_p=top_p,
-                    top_k=top_k,
-                    repetition_penalty=repetition_penalty,
-                    norm_loudness=normalize_loudness,
-                )
+            waveforms = []
+            for index, segment in enumerate(segments):
+                segment_seed = (seed + index) % 2_147_483_648
+                self.torch.manual_seed(segment_seed)
+                self.torch.cuda.manual_seed_all(segment_seed)
+                with self.torch.inference_mode():
+                    waveforms.append(
+                        self.model.generate(
+                            segment,
+                            # The first call prepares the reference voice. Later
+                            # calls reuse it so every segment has the same voice.
+                            audio_prompt_path=reference_path if index == 0 else None,
+                            temperature=temperature,
+                            top_p=top_p,
+                            top_k=top_k,
+                            repetition_penalty=repetition_penalty,
+                            norm_loudness=normalize_loudness,
+                        )
+                    )
+            if len(waveforms) == 1:
+                return waveforms[0]
+            pause_samples = max(0, int(self.sample_rate * segment_pause_ms / 1000))
+            joined = []
+            for index, waveform in enumerate(waveforms):
+                if index and pause_samples:
+                    joined.append(
+                        self.torch.zeros(
+                            (waveform.shape[0], pause_samples),
+                            dtype=waveform.dtype,
+                            device=waveform.device,
+                        )
+                    )
+                joined.append(waveform)
+            return self.torch.cat(joined, dim=-1)
         finally:
             self.model.conds = self._builtin_conditionals
 
@@ -254,7 +353,7 @@ def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
                 "-codec:a",
                 "libmp3lame",
                 "-b:a",
-                "128k",
+                "192k",
                 str(mp3_path),
             ],
             check=True,
@@ -282,6 +381,8 @@ def _info(runtime: ChatterboxRuntime) -> dict[str, Any]:
         "max_reference_bytes": MAX_REFERENCE_BYTES,
         "accepted_reference_formats": ["wav", "mp3", "flac", "ogg"],
         "output_formats": list(_OUTPUT_FORMATS),
+        "default_quality_preset": DEFAULT_QUALITY_PRESET,
+        "quality_presets": list(QUALITY_PRESETS),
     }
 
 
@@ -299,14 +400,29 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
     if len(text) > MAX_TEXT_CHARS:
         raise InputError(f"text must not exceed {MAX_TEXT_CHARS} characters")
 
+    preset_name = data.get("quality_preset", DEFAULT_QUALITY_PRESET)
+    if not isinstance(preset_name, str):
+        raise InputError("quality_preset must be a string")
+    preset_name = preset_name.strip().lower()
+    if preset_name == "publish":
+        preset_name = "publication"
+    preset = QUALITY_PRESETS.get(preset_name)
+    if preset is None:
+        supported = ", ".join(QUALITY_PRESETS)
+        raise InputError(f"quality_preset must be one of: {supported}")
+
     seed = _integer(data, "seed", 0, 0, 2_147_483_647)
-    temperature = _number(data, "temperature", 0.8, 0.05, 2.0)
-    top_p = _number(data, "top_p", 0.95, 0.05, 1.0)
-    top_k = _integer(data, "top_k", 1000, 1, 2000)
-    repetition_penalty = _number(
-        data, "repetition_penalty", 1.2, 1.0, 2.5
+    temperature = _number(
+        data, "temperature", preset["temperature"], 0.05, 2.0
     )
-    normalize_loudness = _boolean(data, "normalize_loudness", True)
+    top_p = _number(data, "top_p", preset["top_p"], 0.05, 1.0)
+    top_k = _integer(data, "top_k", preset["top_k"], 1, 2000)
+    repetition_penalty = _number(
+        data, "repetition_penalty", preset["repetition_penalty"], 1.0, 2.5
+    )
+    normalize_loudness = _boolean(
+        data, "normalize_loudness", preset["normalize_loudness"]
+    )
     reference = decode_reference(data)
     output_format = data.get("output_format", "wav")
     if not isinstance(output_format, str):
@@ -334,6 +450,8 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
                 top_k=top_k,
                 repetition_penalty=repetition_penalty,
                 normalize_loudness=normalize_loudness,
+                max_segment_chars=preset["max_segment_chars"],
+                segment_pause_ms=preset["segment_pause_ms"],
             )
         duration = _save_wave(waveform, runtime.sample_rate, wave_path)
         mime_type, extension = _OUTPUT_FORMATS[output_format]
@@ -357,6 +475,8 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
         "sha256": hashlib.sha256(audio).hexdigest(),
         "model": MODEL_LABEL,
         "seed": seed,
+        "quality_preset": preset_name,
+        "segment_count": len(split_text_segments(text, preset["max_segment_chars"])),
         "used_reference_voice": reference is not None,
         "watermarked": True,
     }

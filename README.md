@@ -197,3 +197,20 @@ The unit tests do not load the GPU model:
 python3 -m unittest -v test_handler.py test_qwen_handler.py
 python3 -m py_compile handler.py qwen_handler.py scripts/chatterbox_client.py
 ```
+
+## Isolated emotion-model auditions
+
+The `audition/` directory contains temporary, scale-to-zero workers for a
+voice-retention and emotional-range comparison. They are deliberately separate
+from the production Qwen endpoint and are never selected by the Token-Gen API.
+
+Four images are published from one workflow: Fish Audio S2 Pro, Higgs TTS 3,
+IndexTTS2, and ZONOS2. One temporary RunPod endpoint can be updated between
+images after it has scaled to zero, avoiding concurrent audition workers. Every
+worker accepts the same `text`, `reference_audio`, `reference_text`, `delivery`,
+`strength`, and `seed` contract. The fixed six-segment script is in
+`audition/matrix.json`.
+
+Hume Octave 2 is not included in the RunPod images because Hume does not publish
+self-hostable Octave 2 weights. It must be tested through Hume's hosted API with
+an account credential.

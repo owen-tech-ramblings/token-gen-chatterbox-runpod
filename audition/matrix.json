@@ -1,0 +1,37 @@
+{
+  "benchmark": "jesse-emotion-range-20260801",
+  "seed": 42,
+  "strength": 0.65,
+  "segments": [
+    {
+      "id": "01-neutral",
+      "delivery": "neutral",
+      "text": "Here is the update. The system is running normally, the files are in place, and the next step is ready when we are."
+    },
+    {
+      "id": "02-warm",
+      "delivery": "warm",
+      "text": "It is genuinely good to have you here. Settle in, take a breath, and let me walk you through what we found."
+    },
+    {
+      "id": "03-concerned",
+      "delivery": "concerned",
+      "text": "Something is not quite right. The readings changed without warning, and I think we should check them carefully before we continue."
+    },
+    {
+      "id": "04-surprised",
+      "delivery": "surprised",
+      "text": "Wait, that actually worked? I was prepared for another long night, but the result appeared on the very first try."
+    },
+    {
+      "id": "05-joyful",
+      "delivery": "joyful",
+      "text": "We did it! After all that patient work, everything finally came together, and I could not be happier with the result."
+    },
+    {
+      "id": "06-reflective",
+      "delivery": "reflective",
+      "text": "Looking back, the difficult parts taught us the most. Progress was quiet for a while, but it was still progress, and it mattered."
+    }
+  ]
+}

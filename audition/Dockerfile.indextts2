@@ -1,0 +1,29 @@
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG INDEX_SOURCE_REVISION=13495845e3028f0bb6ca1462ad22aa0e76349e40
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/models/huggingface \
+    HF_HUB_DISABLE_TELEMETRY=1
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential ca-certificates curl ffmpeg git git-lfs python3-dev \
+        python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /uvx /usr/local/bin/
+
+RUN git clone https://github.com/index-tts/index-tts.git /opt/index-tts \
+    && git -C /opt/index-tts checkout "${INDEX_SOURCE_REVISION}"
+
+WORKDIR /opt/index-tts
+RUN uv sync --frozen \
+    && uv pip install --python .venv/bin/python runpod==1.11.0 huggingface-hub==0.34.4
+
+COPY audition/index_handler.py /app/index_handler.py
+
+ENV PYTHONPATH=/opt/index-tts
+CMD ["/opt/index-tts/.venv/bin/python", "-u", "/app/index_handler.py"]

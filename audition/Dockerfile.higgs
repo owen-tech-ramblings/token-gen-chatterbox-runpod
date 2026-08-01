@@ -1,0 +1,14 @@
+FROM lmsysorg/sglang-omni@sha256:46235435997d1fa93fc81fb1c2d5b7fd8470d77395a5c348c0176094ffddf95e
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/models/huggingface \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    AUDITION_BACKEND=higgs
+
+RUN python3 -m pip install --no-cache-dir runpod==1.11.0 httpx==0.28.1
+
+WORKDIR /workspace
+COPY audition/server_proxy_handler.py /app/server_proxy_handler.py
+
+CMD ["python3", "-u", "/app/server_proxy_handler.py"]

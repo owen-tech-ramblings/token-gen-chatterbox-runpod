@@ -76,6 +76,10 @@ class IndexHandlerTests(unittest.TestCase):
 
 
 class ContainerDefinitionTests(unittest.TestCase):
+    def test_higgs_installs_worker_deps_into_omni_virtualenv(self):
+        dockerfile = (ROOT / "Dockerfile.higgs").read_text(encoding="utf-8")
+        self.assertIn("uv pip install --python /opt/omni/bin/python", dockerfile)
+
     def test_zonos_image_includes_cuda_compiler_for_jit_kernels(self):
         dockerfile = (ROOT / "Dockerfile.zonos2").read_text(encoding="utf-8")
         self.assertIn("cudnn-devel-ubuntu24.04", dockerfile)

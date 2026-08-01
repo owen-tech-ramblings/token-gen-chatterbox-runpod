@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     AUDITION_BACKEND=higgs
 
-RUN /opt/omni/bin/python -m pip install --no-cache-dir \
+RUN uv pip install --python /opt/omni/bin/python \
         runpod==1.11.0 httpx==0.28.1
 
 WORKDIR /workspace

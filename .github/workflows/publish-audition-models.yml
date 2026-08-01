@@ -42,8 +42,12 @@ jobs:
 
       - uses: docker/build-push-action@v6
         if: >-
-          ${{ !contains(github.event.head_commit.message || '', '[higgs-only]') ||
-              matrix.variant == 'higgs' }}
+          ${{ (!contains(github.event.head_commit.message || '', '[higgs-only]') &&
+               !contains(github.event.head_commit.message || '', '[zonos-only]')) ||
+              (contains(github.event.head_commit.message || '', '[higgs-only]') &&
+               matrix.variant == 'higgs') ||
+              (contains(github.event.head_commit.message || '', '[zonos-only]') &&
+               matrix.variant == 'zonos2') }}
         with:
           context: .
           file: audition/Dockerfile.${{ matrix.variant }}

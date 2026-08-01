@@ -355,9 +355,7 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int = 44_100) -> bytes:
     return output.getvalue()
 
 
-def _zonos_request(base_url: str, request: dict[str, Any], reference_b64: str) -> bytes:
-    import httpx
-
+def _zonos_payload(request: dict[str, Any], reference_b64: str) -> dict[str, Any]:
     delivery = request["delivery"]
     sliders = ZONOS_EMOTIONS[delivery]
     payload = {
@@ -374,12 +372,20 @@ def _zonos_request(base_url: str, request: dict[str, Any], reference_b64: str) -
         "emotion_sliders": sliders or None,
         "emotion_strength": request["strength"],
         "emotion_cfg_scale": 1.0,
+        "quality_buckets": None,
         "quality_values": {"trailing_silence_s": 0.4},
     }
     if delivery == "reflective":
         payload["emotion_arousal"] = -0.25
     elif delivery in {"surprised", "joyful"}:
         payload["emotion_arousal"] = 0.2
+    return payload
+
+
+def _zonos_request(base_url: str, request: dict[str, Any], reference_b64: str) -> bytes:
+    import httpx
+
+    payload = _zonos_payload(request, reference_b64)
     response = httpx.post(
         base_url + "/tts/generate", json=payload, timeout=900.0
     )

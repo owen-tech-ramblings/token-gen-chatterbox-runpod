@@ -49,6 +49,10 @@ class ProxyHandlerTests(unittest.TestCase):
     def test_zonos_controls_keep_accurate_mode(self):
         self.assertIn("happy", self.module.ZONOS_EMOTIONS["warm"])
         self.assertEqual(self.module.ZONOS_EMOTIONS["neutral"], {})
+        request = self.module._validate_request(self.request(delivery="neutral"))
+        payload = self.module._zonos_payload(request, "reference-data")
+        self.assertIsNone(payload["quality_buckets"])
+        self.assertEqual(payload["quality_values"]["trailing_silence_s"], 0.4)
 
     def test_higgs_uses_base_image_virtualenv_and_allows_temp_references(self):
         with patch.dict(os.environ, {"AUDITION_BACKEND": "higgs"}):

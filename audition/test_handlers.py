@@ -75,5 +75,11 @@ class IndexHandlerTests(unittest.TestCase):
         self.assertTrue(result["isolated_audition_worker"])
 
 
+class ContainerDefinitionTests(unittest.TestCase):
+    def test_zonos_image_includes_cuda_compiler_for_jit_kernels(self):
+        dockerfile = (ROOT / "Dockerfile.zonos2").read_text(encoding="utf-8")
+        self.assertIn("cudnn-devel-ubuntu24.04", dockerfile)
+
+
 if __name__ == "__main__":
     unittest.main()

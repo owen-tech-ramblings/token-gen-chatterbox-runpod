@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ZONOS_SOURCE_REVISION=194c0a3ab67b90383a67646289f28d4ecb1c1f64

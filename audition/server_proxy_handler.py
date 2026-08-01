@@ -186,10 +186,12 @@ def _server_configuration() -> tuple[list[str], str, tuple[str, ...]]:
     if BACKEND == "higgs":
         return (
             [
-                "sgl-omni",
+                "/opt/omni/bin/sgl-omni",
                 "serve",
                 "--model-path",
                 MODEL_IDS["higgs"],
+                "--allowed-local-media-path",
+                "/tmp",
                 "--port",
                 "8000",
             ],
@@ -315,13 +317,8 @@ def _higgs_request(
     import httpx
 
     tag = HIGGS_TAGS[request["delivery"]] if request["strength"] >= 0.2 else ""
-    if request["delivery"] != "neutral":
-        expressive = (
-            "<|prosody:expressive_high|>"
-            if request["strength"] >= 0.75
-            else "<|prosody:expressive_low|>"
-        )
-        tag += expressive
+    if request["delivery"] != "neutral" and request["strength"] >= 0.80:
+        tag += "<|prosody:expressive_high|>"
     payload = {
         "input": tag + request["text"],
         "references": [

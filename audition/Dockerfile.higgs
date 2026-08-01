@@ -6,9 +6,10 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     AUDITION_BACKEND=higgs
 
-RUN python3 -m pip install --no-cache-dir runpod==1.11.0 httpx==0.28.1
+RUN /opt/omni/bin/python -m pip install --no-cache-dir \
+        runpod==1.11.0 httpx==0.28.1
 
 WORKDIR /workspace
 COPY audition/server_proxy_handler.py /app/server_proxy_handler.py
 
-CMD ["python3", "-u", "/app/server_proxy_handler.py"]
+CMD ["/opt/omni/bin/python", "-u", "/app/server_proxy_handler.py"]

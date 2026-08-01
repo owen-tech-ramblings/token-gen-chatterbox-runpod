@@ -57,6 +57,7 @@ class ProxyHandlerTests(unittest.TestCase):
         self.assertEqual(command[0], "/opt/omni/bin/sgl-omni")
         self.assertIn("--allowed-local-media-path", command)
         self.assertIn("/tmp", command)
+        self.assertEqual(module.HIGGS_MAX_NEW_TOKENS, 320)
 
 
 class IndexHandlerTests(unittest.TestCase):

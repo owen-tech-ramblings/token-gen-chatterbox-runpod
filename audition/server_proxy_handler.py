@@ -49,6 +49,7 @@ SOURCE_REVISIONS = {
 MAX_TEXT_CHARS = 2_000
 MAX_REFERENCE_TEXT_CHARS = 4_000
 MAX_REFERENCE_BYTES = 12 * 1024 * 1024
+HIGGS_MAX_NEW_TOKENS = int(os.getenv("HIGGS_MAX_NEW_TOKENS", "320"))
 DELIVERIES = (
     "neutral",
     "warm",
@@ -329,7 +330,7 @@ def _higgs_request(
         ],
         "temperature": 0.8,
         "top_k": 50,
-        "max_new_tokens": 2_048,
+        "max_new_tokens": HIGGS_MAX_NEW_TOKENS,
         "seed": request["seed"],
     }
     response = httpx.post(

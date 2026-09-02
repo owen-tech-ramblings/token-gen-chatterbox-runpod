@@ -1,0 +1,81 @@
+name: Universal GPU image
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: [self-hosted, linux, x64, lil-zen-ci]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run targeted universal-image tests
+        run: >-
+          python3 -m unittest -v
+          test_qwen_handler.QwenHandlerTests.test_blackwell_cuda_preflight_precedes_model_loading
+          test_qwen_handler.QwenHandlerTests.test_unsupported_gpu_fails_before_model_initialization
+          test_qwen_handler.QwenHandlerTests.test_info_describes_exact_transcript_cloning
+          test_universal_image.UniversalImageContractTests.test_dockerfile_pins_cuda_pytorch_architectures_and_source
+          test_universal_image.UniversalImageContractTests.test_workflow_is_master_only_rootless_and_commit_addressed
+
+      - name: Build and publish immutable Qwen Base image
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REPOSITORY: ghcr.io/owen-tech-ramblings/token-gen-chatterbox-runpod
+        run: |
+          set -euo pipefail
+          export HOME=/home/runner
+          export USER=runner
+          export XDG_RUNTIME_DIR=/tmp/run
+          export TMPDIR=/tmp
+          export DOCKER_CONFIG=/tmp/docker
+          IMAGE_REFERENCE="${IMAGE_REPOSITORY}:qwen3-base-${GITHUB_SHA}"
+
+          rm -rf /tmp/rootlesskit-state /tmp/run /tmp/docker
+          rm -f /tmp/buildkitd.sock
+          mkdir -p "$XDG_RUNTIME_DIR" "$DOCKER_CONFIG" /tmp/rootlesskit-state /runner/buildkit-root
+          rootlesskit --subid-source=static --state-dir=/tmp/rootlesskit-state \
+            buildkitd --rootless --addr unix:///tmp/buildkitd.sock \
+            --oci-worker-snapshotter=native --oci-worker-no-process-sandbox \
+            --root /runner/buildkit-root >/tmp/buildkitd.log 2>&1 &
+          buildkit_pid=$!
+          cleanup() {
+            kill "$buildkit_pid" 2>/dev/null || true
+            rm -f "$DOCKER_CONFIG/config.json"
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 60); do
+            if buildctl --addr unix:///tmp/buildkitd.sock debug workers >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          if ! buildctl --addr unix:///tmp/buildkitd.sock debug workers; then
+            cat /tmp/buildkitd.log
+            exit 1
+          fi
+
+          registry_auth="$(printf '%s:%s' "$GITHUB_ACTOR" "$REGISTRY_TOKEN" | base64 | tr -d '\n')"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$registry_auth" > "$DOCKER_CONFIG/config.json"
+          unset registry_auth REGISTRY_TOKEN
+
+          buildctl --addr unix:///tmp/buildkitd.sock build \
+            --frontend dockerfile.v0 \
+            --local context=. \
+            --local dockerfile=. \
+            --opt filename=Dockerfile.qwen \
+            --opt platform=linux/amd64 \
+            --opt build-arg:MODEL_VARIANT=base \
+            --opt build-arg:MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+            --opt build-arg:MODEL_REVISION=fd4b254389122332181a7c3db7f27e918eec64e3 \
+            --opt build-arg:SOURCE_COMMIT=${GITHUB_SHA} \
+            --output "type=image,name=${IMAGE_REFERENCE},push=true"

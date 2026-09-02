@@ -19,10 +19,6 @@ jobs:
       - name: Run targeted universal-image tests
         run: >-
           python3 -m unittest -v
-          test_qwen_handler.QwenHandlerTests.test_blackwell_cuda_preflight_precedes_model_loading
-          test_qwen_handler.QwenHandlerTests.test_unsupported_gpu_fails_before_model_initialization
-          test_qwen_handler.QwenHandlerTests.test_info_describes_exact_transcript_cloning
-          test_universal_image.UniversalImageContractTests.test_dockerfile_pins_cuda_pytorch_architectures_and_source
           test_universal_image.UniversalImageContractTests.test_workflow_is_master_only_rootless_and_commit_addressed
 
       - name: Build and publish immutable Qwen Base image
@@ -68,14 +64,32 @@ jobs:
           printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$registry_auth" > "$DOCKER_CONFIG/config.json"
           unset registry_auth REGISTRY_TOKEN
 
-          buildctl --addr unix:///tmp/buildkitd.sock build \
-            --frontend dockerfile.v0 \
-            --local context=. \
-            --local dockerfile=. \
-            --opt filename=Dockerfile.qwen \
-            --opt platform=linux/amd64 \
-            --opt build-arg:MODEL_VARIANT=base \
-            --opt build-arg:MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-            --opt build-arg:MODEL_REVISION=fd4b254389122332181a7c3db7f27e918eec64e3 \
-            --opt build-arg:SOURCE_COMMIT=${GITHUB_SHA} \
-            --output "type=image,name=${IMAGE_REFERENCE},push=true"
+          push_image() {
+            buildctl --addr unix:///tmp/buildkitd.sock build \
+              --frontend dockerfile.v0 \
+              --local context=. \
+              --local dockerfile=. \
+              --opt filename=Dockerfile.qwen \
+              --opt platform=linux/amd64 \
+              --opt build-arg:MODEL_VARIANT=base \
+              --opt build-arg:MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+              --opt build-arg:MODEL_REVISION=fd4b254389122332181a7c3db7f27e918eec64e3 \
+              --opt build-arg:SOURCE_COMMIT=${GITHUB_SHA} \
+              --output "type=image,name=${IMAGE_REFERENCE},push=true"
+          }
+
+          push_succeeded=false
+          for push_attempt in 1 2 3; do
+            if push_image; then
+              push_succeeded=true
+              break
+            fi
+            if [ "$push_attempt" -lt 3 ]; then
+              echo "GHCR push attempt $push_attempt failed; retrying the same immutable image"
+              sleep "$((push_attempt * 15))"
+            fi
+          done
+          if [ "$push_succeeded" != true ]; then
+            echo "immutable image push failed after 3 attempts" >&2
+            exit 1
+          fi

@@ -1,13 +1,16 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+# syntax=docker/dockerfile:1.7
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04@sha256:17e2934e1fa96152b14f78078bfbafd0f00f391df995dc6c641a720fce1202bb
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG SOURCE_REPOSITORY=https://github.com/owen-tech-ramblings/token-gen-chatterbox-runpod
+ARG SOURCE_COMMIT=local-check
 ARG MODEL_VARIANT=base
 ARG MODEL_ID=Qwen/Qwen3-TTS-12Hz-1.7B-Base
 ARG MODEL_REVISION=fd4b254389122332181a7c3db7f27e918eec64e3
 
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
-LABEL org.opencontainers.image.description="Qwen3-TTS 1.7B worker for RunPod Serverless"
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"
+LABEL org.opencontainers.image.description="Universal-GPU Qwen3-TTS 1.7B worker for RunPod Serverless"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 ENV PYTHONUNBUFFERED=1 \
@@ -17,6 +20,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     HF_HUB_DISABLE_XET=1 \
     TRANSFORMERS_OFFLINE=1 \
+    NVIDIA_REQUIRE_CUDA="cuda>=12.8" \
     QWEN_MODEL_PATH=/models/qwen/model \
     QWEN_MODEL_VARIANT=${MODEL_VARIANT} \
     QWEN_MODEL_ID=${MODEL_ID} \
@@ -33,19 +37,44 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install \
-        --index-url https://download.pytorch.org/whl/cu124 \
-        torch==2.6.0 \
-        torchaudio==2.6.0
-
-WORKDIR /app
-COPY requirements-qwen.txt .
-RUN python3 -m pip install \
         --upgrade \
         pip \
         setuptools \
         wheel \
         numpy==1.26.4
+RUN python3 -m pip install \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        torch==2.11.0 \
+        torchaudio==2.11.0
+
+WORKDIR /app
+COPY requirements-qwen.txt .
 RUN python3 -m pip install --requirement requirements-qwen.txt
+
+# This CPU-only build check reads the architectures embedded in the final
+# PyTorch wheel. It prevents a successful publish when any directly required
+# Ampere, Hopper, or Blackwell kernel is absent.
+RUN python3 - <<'PY'
+import re
+import torch
+
+required = {"sm_80", "sm_86", "sm_90", "sm_100", "sm_120"}
+runtime = str(torch.version.cuda or "")
+if runtime != "12.8":
+    raise SystemExit(f"expected PyTorch CUDA 12.8 runtime, found {runtime!r}")
+raw = torch._C._cuda_getArchFlags()
+if isinstance(raw, str):
+    raw = raw.replace(";", " ").split()
+compiled = {
+    value.strip().lower()
+    for value in raw
+    if isinstance(value, str) and re.fullmatch(r"sm_[0-9]+", value.strip().lower())
+}
+missing = sorted(required - compiled)
+if missing:
+    raise SystemExit(f"PyTorch wheel is missing required CUDA kernels: {missing}")
+print(f"verified CUDA {runtime} PyTorch architectures: {sorted(compiled)}")
+PY
 
 # Pin and bake the complete public model so scale-to-zero cold starts never
 # depend on a live Hugging Face download.

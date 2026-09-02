@@ -40,6 +40,21 @@ MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(14 * 1024 * 1024)))
 DEFAULT_QUALITY_PRESET = os.getenv(
     "DEFAULT_QUALITY_PRESET", "publication"
 ).strip().lower()
+REQUIRED_COMPILED_CUDA_ARCHITECTURES = (
+    "sm_80",
+    "sm_86",
+    "sm_90",
+    "sm_100",
+    "sm_120",
+)
+SUPPORTED_COMPUTE_CAPABILITIES = (
+    "sm_80",
+    "sm_86",
+    "sm_89",
+    "sm_90",
+    "sm_100",
+    "sm_120",
+)
 
 # The balanced preset follows Qwen's published generation defaults. Publication
 # reduces randomness modestly and masters the result without suppressing natural
@@ -107,6 +122,80 @@ class InputError(ValueError):
     """Raised when a request cannot be safely processed."""
 
 
+def _compiled_cuda_architectures(torch_module: Any) -> list[str]:
+    """Return normalized CUDA architectures embedded in the PyTorch wheel."""
+
+    values: Any = torch_module.cuda.get_arch_list()
+    if not values:
+        private_getter = getattr(
+            getattr(torch_module, "_C", None), "_cuda_getArchFlags", None
+        )
+        if callable(private_getter):
+            values = private_getter()
+    if isinstance(values, str):
+        values = values.replace(";", " ").split()
+    if not isinstance(values, (list, tuple)):
+        values = []
+
+    normalized = {
+        match.group(0)
+        for value in values
+        if isinstance(value, str)
+        for match in [re.fullmatch(r"sm_[0-9]+", value.strip().lower())]
+        if match is not None
+    }
+    return sorted(normalized, key=lambda value: int(value.removeprefix("sm_")))
+
+
+def _cuda_preflight(torch_module: Any) -> dict[str, Any]:
+    """Prove the assigned GPU and wheel are compatible before model loading."""
+
+    if not torch_module.cuda.is_available():
+        raise RuntimeError("Qwen3-TTS requires a CUDA GPU, but CUDA is unavailable")
+
+    compiled = _compiled_cuda_architectures(torch_module)
+    missing = sorted(
+        set(REQUIRED_COMPILED_CUDA_ARCHITECTURES) - set(compiled),
+        key=lambda value: int(value.removeprefix("sm_")),
+    )
+    if missing:
+        raise RuntimeError(
+            "the installed PyTorch wheel is missing required CUDA kernels: "
+            + ", ".join(missing)
+        )
+
+    major, minor = torch_module.cuda.get_device_capability(0)
+    capability = f"sm_{major}{minor}"
+    if capability not in SUPPORTED_COMPUTE_CAPABILITIES:
+        raise RuntimeError(
+            f"CUDA compute capability {capability} is not supported; supported "
+            f"capabilities are {', '.join(SUPPORTED_COMPUTE_CAPABILITIES)}"
+        )
+
+    directly_compiled = capability in compiled
+    ada_binary_compatible = capability == "sm_89" and any(
+        value.startswith("sm_8") for value in compiled
+    )
+    if not directly_compiled and not ada_binary_compatible:
+        raise RuntimeError(
+            f"CUDA compute capability {capability} has no compatible kernel in "
+            f"the installed PyTorch wheel ({', '.join(compiled)})"
+        )
+
+    probe = torch_module.empty(1, device="cuda:0")
+    probe.add_(1)
+    torch_module.cuda.synchronize(0)
+    return {
+        "device_name": torch_module.cuda.get_device_name(0),
+        "compute_capability": capability,
+        "torch_version": str(torch_module.__version__),
+        "cuda_runtime": str(torch_module.version.cuda),
+        "compiled_cuda_architectures": compiled,
+        "supported_compute_capabilities": list(SUPPORTED_COMPUTE_CAPABILITIES),
+        "cuda_preflight": "passed",
+    }
+
+
 def split_text_segments(text: str, maximum: int) -> list[str]:
     """Split long English text at natural boundaries."""
 
@@ -149,14 +238,23 @@ class QwenRuntime:
 
     def __init__(self) -> None:
         import torch
-        from qwen_tts import Qwen3TTSModel
 
-        if not torch.cuda.is_available():
-            raise RuntimeError("Qwen3-TTS requires a CUDA GPU, but CUDA is unavailable")
+        preflight = _cuda_preflight(torch)
+        from qwen_tts import Qwen3TTSModel
 
         self.torch = torch
         self.variant = MODEL_VARIANT
-        self.device_name = torch.cuda.get_device_name(0)
+        self.device_name = preflight["device_name"]
+        self.compute_capability = preflight["compute_capability"]
+        self.torch_version = preflight["torch_version"]
+        self.cuda_runtime = preflight["cuda_runtime"]
+        self.compiled_cuda_architectures = preflight[
+            "compiled_cuda_architectures"
+        ]
+        self.supported_compute_capabilities = preflight[
+            "supported_compute_capabilities"
+        ]
+        self.cuda_preflight = preflight["cuda_preflight"]
         self.dtype_name = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
         dtype = torch.bfloat16 if self.dtype_name == "bfloat16" else torch.float16
         self.model = Qwen3TTSModel.from_pretrained(
@@ -503,6 +601,12 @@ def _info(runtime: QwenRuntime) -> dict[str, Any]:
         ],
         "sample_rate": runtime.sample_rate,
         "gpu": runtime.device_name,
+        "compute_capability": runtime.compute_capability,
+        "torch_version": runtime.torch_version,
+        "cuda_runtime": runtime.cuda_runtime,
+        "compiled_cuda_architectures": runtime.compiled_cuda_architectures,
+        "supported_compute_capabilities": runtime.supported_compute_capabilities,
+        "cuda_preflight": runtime.cuda_preflight,
         "dtype": runtime.dtype_name,
         "attention_implementation": ATTENTION_IMPLEMENTATION,
         "voice_cloning": runtime.variant == "base",

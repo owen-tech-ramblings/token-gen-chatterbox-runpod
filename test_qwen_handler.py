@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +14,25 @@ class FakeRuntime:
     sample_rate = 24_000
     device_name = "Fake GPU"
     dtype_name = "bfloat16"
+    compute_capability = "sm_120"
+    torch_version = "2.11.0+cu128"
+    cuda_runtime = "12.8"
+    compiled_cuda_architectures = [
+        "sm_80",
+        "sm_86",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+    ]
+    supported_compute_capabilities = [
+        "sm_80",
+        "sm_86",
+        "sm_89",
+        "sm_90",
+        "sm_100",
+        "sm_120",
+    ]
+    cuda_preflight = "passed"
 
     def __init__(self, variant="base") -> None:
         self.variant = variant
@@ -38,6 +59,53 @@ def fake_encode_mp3(_wave_path: Path, mp3_path: Path) -> None:
     mp3_path.write_bytes(b"ID3-test-audio")
 
 
+def fake_torch_module(capability: tuple[int, int], events: list[str]) -> ModuleType:
+    module = ModuleType("torch")
+
+    class FakeProbe:
+        def add_(self, _value):
+            events.append("cuda-op")
+            return self
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def get_device_name(_index: int) -> str:
+            return "NVIDIA RTX PRO 6000 Blackwell"
+
+        @staticmethod
+        def get_device_capability(_index: int) -> tuple[int, int]:
+            return capability
+
+        @staticmethod
+        def get_arch_list() -> list[str]:
+            return ["sm_80", "sm_86", "sm_90", "sm_100", "sm_120"]
+
+        @staticmethod
+        def synchronize(_index: int = 0) -> None:
+            events.append("synchronize")
+
+        @staticmethod
+        def is_bf16_supported() -> bool:
+            return True
+
+    def empty(_size: int, *, device: str):
+        assert device == "cuda:0"
+        events.append("allocate")
+        return FakeProbe()
+
+    module.cuda = FakeCuda()
+    module.empty = empty
+    module.version = SimpleNamespace(cuda="12.8")
+    module.__version__ = "2.11.0+cu128"
+    module.bfloat16 = object()
+    module.float16 = object()
+    return module
+
+
 class QwenHandlerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime = FakeRuntime()
@@ -52,6 +120,69 @@ class QwenHandlerTests(unittest.TestCase):
         self.assertTrue(result["exact_transcript_cloning"])
         self.assertFalse(result["built_in_voice"])
         self.assertFalse(result["watermarked"])
+        self.assertEqual(result["compute_capability"], "sm_120")
+        self.assertEqual(result["torch_version"], "2.11.0+cu128")
+        self.assertEqual(result["cuda_runtime"], "12.8")
+        self.assertEqual(
+            result["compiled_cuda_architectures"],
+            ["sm_80", "sm_86", "sm_90", "sm_100", "sm_120"],
+        )
+        self.assertIn("sm_89", result["supported_compute_capabilities"])
+        self.assertEqual(result["cuda_preflight"], "passed")
+
+    def test_blackwell_cuda_preflight_precedes_model_loading(self) -> None:
+        events: list[str] = []
+        torch_module = fake_torch_module((12, 0), events)
+        qwen_module = ModuleType("qwen_tts")
+
+        class FakeModel:
+            @classmethod
+            def from_pretrained(cls, *_args, **_kwargs):
+                events.append("model-load")
+                return object()
+
+        qwen_module.Qwen3TTSModel = FakeModel
+        with patch.dict(
+            sys.modules,
+            {"torch": torch_module, "qwen_tts": qwen_module},
+        ):
+            runtime = qwen_handler.QwenRuntime()
+
+        self.assertEqual(runtime.compute_capability, "sm_120")
+        self.assertEqual(runtime.cuda_preflight, "passed")
+        self.assertEqual(
+            events,
+            ["allocate", "cuda-op", "synchronize", "model-load"],
+        )
+
+        ada_events: list[str] = []
+        ada_preflight = qwen_handler._cuda_preflight(
+            fake_torch_module((8, 9), ada_events)
+        )
+        self.assertEqual(ada_preflight["compute_capability"], "sm_89")
+        self.assertEqual(ada_preflight["cuda_preflight"], "passed")
+        self.assertEqual(ada_events, ["allocate", "cuda-op", "synchronize"])
+
+    def test_unsupported_gpu_fails_before_model_initialization(self) -> None:
+        events: list[str] = []
+        torch_module = fake_torch_module((7, 5), events)
+        qwen_module = ModuleType("qwen_tts")
+
+        class UnexpectedModel:
+            @classmethod
+            def from_pretrained(cls, *_args, **_kwargs):
+                events.append("model-load")
+                return object()
+
+        qwen_module.Qwen3TTSModel = UnexpectedModel
+        with patch.dict(
+            sys.modules,
+            {"torch": torch_module, "qwen_tts": qwen_module},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "sm_75.*not supported"):
+                qwen_handler.QwenRuntime()
+
+        self.assertEqual(events, [])
 
     @patch("qwen_handler._save_wave", fake_save_wave)
     def test_clone_uses_reference_text(self) -> None:

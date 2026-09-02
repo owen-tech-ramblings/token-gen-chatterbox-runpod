@@ -55,6 +55,8 @@ class UniversalImageContractTests(unittest.TestCase):
         self.assertIn("secrets.GITHUB_TOKEN", workflow)
         self.assertIn("qwen3-base-${GITHUB_SHA}", workflow)
         self.assertIn("build-arg:SOURCE_COMMIT=${GITHUB_SHA}", workflow)
+        self.assertIn("for push_attempt in 1 2 3", workflow)
+        self.assertIn("immutable image push failed after 3 attempts", workflow)
         for legacy in (
             "publish.yml",
             "publish-qwen.yml",

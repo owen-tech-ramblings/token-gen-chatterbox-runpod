@@ -16,11 +16,16 @@ class LocalReleaseTests(unittest.TestCase):
         commit = "a" * 40
         old = release.IMAGE_REPOSITORY + "@sha256:" + "b" * 64
         new = release.IMAGE_REPOSITORY + "@sha256:" + "c" * 64
-        before = {"endpoint": {"id": "synthetic-endpoint", "templateId": "synthetic-template",
-                  "gpuTypeIds": ["synthetic-gpu"], "allowedCudaVersions": ["12.8"],
-                  "cudaVersion": "12.8", "workersMin": 0, "workersMax": 1},
-                  "template": {"id": "synthetic-template", "imageName": old,
-                               "env": {"SYNTHETIC_VALUE": "private-fixture-value"}},
+        # Shape matches current v2 get_endpoint, with synthetic values only.
+        before = {"endpoint": {"id": "synthetic-endpoint", "image": old,
+                  "args": "synthetic-private-args", "createdAt": "2026-01-01T00:00:00Z",
+                  "dataCenterIds": [], "disk": 50, "flashboot": "FLASHBOOT",
+                  "gpu": {"pools": ["synthetic-pool"], "count": 1,
+                          "allowedCudaVersions": ["12.8"], "minCudaVersion": "12.8"},
+                  "name": "synthetic", "networkVolumes": [], "requestUrls": {},
+                  "scaling": {"type": "QUEUE_DELAY", "queueDelay": 1},
+                  "timeout": 600000, "type": "QUEUE",
+                  "workers": {"min": 0, "max": 1, "idleTimeout": 5}},
                   "health": {"jobs": {"inQueue": 0, "inProgress": 0}}}
         proof = {"image": new, "source_commit": commit}
         for fault in (None, "drift", "canary", "rollback"):
@@ -28,15 +33,15 @@ class LocalReleaseTests(unittest.TestCase):
             actions = []
             def bridge(action, details):
                 actions.append(action)
-                if action in ("patch_template_image", "restore_template_image"):
-                    self.assertEqual(set(details["body"]), {"imageName"})
-                    state["template"]["imageName"] = details["body"]["imageName"]
-                    if action == "patch_template_image" and fault == "drift":
-                        state["endpoint"]["workersMax"] = 2
-                    if action == "restore_template_image":
+                if action in ("patch_endpoint_image", "restore_endpoint_image"):
+                    self.assertEqual(set(details["body"]), {"image"})
+                    self.assertEqual(details["id"], "synthetic-endpoint")
+                    state["endpoint"]["image"] = details["body"]["image"]
+                    if action == "patch_endpoint_image" and fault == "drift":
+                        state["endpoint"]["workers"]["max"] = 2
+                    if action == "restore_endpoint_image":
                         if fault == "rollback":
                             raise OSError("simulated lost rollback response")
-                        state["endpoint"]["workersMax"] = 1
                 if action == "run_info_canary":
                     return {"status": "FAILED" if fault in ("canary", "rollback") else "COMPLETED", "id": "synthetic-job",
                             "output": {"model": "qwen3-tts-1.7b-base", "source_commit": commit,
@@ -52,12 +57,25 @@ class LocalReleaseTests(unittest.TestCase):
                 else:
                     release.transaction(directory, "synthetic-endpoint", before, proof, {"conclusion": "success"}, bridge)
                 receipt = release.private_json(directory / "receipt.json")
-                self.assertEqual(receipt["status"], "complete" if fault is None else "rollback_required" if fault == "rollback" else "rolled_back")
-                self.assertNotIn("private-fixture-value", (directory / "receipt.json").read_text())
+                self.assertEqual(receipt["status"], "complete" if fault is None else "rollback_required" if fault in ("rollback", "drift") else "rolled_back")
+                self.assertNotIn("synthetic-private-args", (directory / "receipt.json").read_text())
                 self.assertEqual((directory / "provider-before.json").stat().st_mode & 0o777, 0o600)
                 self.assertEqual(release.private_json(directory / "provider-before.json"), before)
                 if fault:
-                    self.assertLess(actions.index("quiesce_canary"), actions.index("restore_template_image"))
+                    self.assertLess(actions.index("quiesce_canary"), actions.index("restore_endpoint_image"))
+        for key in before["endpoint"]:
+            if key == "image":
+                continue
+            changed = copy.deepcopy(before)
+            changed["endpoint"][key] = "synthetic-drift"
+            with self.subTest(protected_key=key), self.assertRaises(release.ReleaseError):
+                release.readback_matches(before, changed, "synthetic-endpoint", old)
+        future_setting = copy.deepcopy(before)
+        future_setting["endpoint"]["futureSetting"] = "preserve-this-too"
+        changed = copy.deepcopy(future_setting)
+        changed["endpoint"]["futureSetting"] = "changed"
+        with self.assertRaises(release.ReleaseError):
+            release.readback_matches(future_setting, changed, "synthetic-endpoint", old)
         busy = copy.deepcopy(before)
         busy["health"]["jobs"]["inProgress"] = 1
         with tempfile.TemporaryDirectory() as temporary, self.assertRaises(release.ReleaseError):

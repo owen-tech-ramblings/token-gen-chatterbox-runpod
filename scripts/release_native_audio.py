@@ -86,18 +86,23 @@ def durable_json(path, value):
 
 
 def validate_snapshot(snapshot, endpoint_id, *, idle=False):
-    endpoint, template = snapshot.get("endpoint"), snapshot.get("template")
-    if not isinstance(endpoint, dict) or not isinstance(template, dict):
-        raise ReleaseError("Provider snapshot must contain full endpoint and template objects")
-    if endpoint.get("id") != endpoint_id or endpoint.get("templateId") != template.get("id") or not template.get("id"):
+    endpoint = snapshot.get("endpoint")
+    if not isinstance(endpoint, dict):
+        raise ReleaseError("Provider snapshot must contain the full v2 endpoint object")
+    if endpoint.get("id") != endpoint_id:
         raise ReleaseError("Provider snapshot identity differs")
-    image = template.get("imageName")
+    image = endpoint.get("image")
     if not isinstance(image, str) or not image.startswith(IMAGE_REPOSITORY + "@sha256:") or not re.fullmatch(r"sha256:[a-f0-9]{64}", image.rsplit("@", 1)[1]):
         raise ReleaseError("Provider image must be an immutable image in the reviewed repository")
-    if not isinstance(template.get("env"), dict):
-        raise ReleaseError("Snapshot is missing the complete template environment")
-    for key in ("gpuTypeIds", "allowedCudaVersions", "cudaVersion", "workersMin", "workersMax"):
-        if key not in endpoint:
+    # Require the current GPU endpoint shape. Do not fabricate env/template data
+    # omitted by v2 GET; image-only PATCH leaves omitted settings untouched.
+    required = {"args", "createdAt", "dataCenterIds", "disk", "flashboot", "gpu", "id",
+                "image", "name", "networkVolumes", "requestUrls", "scaling", "timeout", "type", "workers"}
+    if not required.issubset(endpoint):
+        raise ReleaseError("Snapshot is missing current v2 endpoint settings")
+    for key, fields in (("gpu", {"count", "pools", "allowedCudaVersions", "minCudaVersion"}),
+                        ("workers", {"min", "max", "idleTimeout"}), ("scaling", {"type"})):
+        if not isinstance(endpoint[key], dict) or not fields.issubset(endpoint[key]):
             raise ReleaseError("Snapshot is missing GPU, CUDA or scaling configuration")
     if idle:
         jobs = snapshot.get("health", {}).get("jobs", {})
@@ -107,12 +112,9 @@ def validate_snapshot(snapshot, endpoint_id, *, idle=False):
 
 
 def protected_settings(snapshot):
-    # Provider timestamps may change after PATCH. Every other returned setting
-    # must survive exactly, including environment values and scaling policy.
-    ignored = {"updatedAt", "lastUpdatedAt"}
-    endpoint = {k: v for k, v in snapshot["endpoint"].items() if k not in ignored}
-    template = {k: v for k, v in snapshot["template"].items() if k not in ignored | {"imageName"}}
-    return {"endpoint": endpoint, "template": template}
+    # Compare every returned field, including nested/unknown future settings.
+    # The current v2 endpoint has no mutable update timestamp to exclude.
+    return {key: value for key, value in snapshot["endpoint"].items() if key != "image"}
 
 
 def readback_matches(before, after, endpoint_id, image):
@@ -140,7 +142,7 @@ def transaction(directory, endpoint_id, before, proof, ci, bridge, *, active_pat
     durable_json(snapshot_path, before)
     receipt = {"schema": 1, "source_commit": proof["source_commit"], "controller_commit": proof.get("controller_commit"), "image": image,
                "previous_image": previous_image, "endpoint_id": endpoint_id,
-               "template_id": before["template"]["id"], "before_sha256": before_hash,
+               "before_sha256": before_hash,
                "protected_settings_sha256": checksum(protected_settings(before)),
                "registry_proof_sha256": checksum(proof), "ci": ci,
                "started_at": datetime.now(timezone.utc).isoformat(), "status": "prepared"}
@@ -152,13 +154,13 @@ def transaction(directory, endpoint_id, before, proof, ci, bridge, *, active_pat
         # Refresh under the held local lock immediately before emitting PATCH.
         fresh = bridge("read_provider", {"endpoint_id": endpoint_id})
         validate_snapshot(fresh, endpoint_id, idle=True)
-        if protected_settings(fresh) != protected_settings(before) or fresh["template"]["imageName"] != previous_image:
+        if protected_settings(fresh) != protected_settings(before) or fresh["endpoint"]["image"] != previous_image:
             raise ReleaseError("Provider changed after preparation")
         receipt["status"] = "cutover_pending"
         durable_json(receipt_path, receipt)
         mutation_started = True
-        after = bridge("patch_template_image", {"template_id": before["template"]["id"],
-                                               "body": {"imageName": image}, "then": "read full endpoint and template"})
+        after = bridge("patch_endpoint_image", {"id": endpoint_id,
+                                               "body": {"image": image}, "then": "get_endpoint plus endpoint_health after update_endpoint"})
         readback_matches(before, after, endpoint_id, image)
         canary = bridge("run_info_canary", {"endpoint_id": endpoint_id,
                                             "input": {"action": "info"}, "allow_replacement": False})
@@ -182,9 +184,9 @@ def transaction(directory, endpoint_id, before, proof, ci, bridge, *, active_pat
                                    "canary_job_id": receipt.get("canary_job_id"),
                                    "instruction": "Confirm submitted info job terminal or cancelled and zero queued/active jobs; never submit a replacement"})
                 validate_snapshot(quiescent, endpoint_id, idle=True)
-                restored = bridge("restore_template_image", {"template_id": before["template"]["id"],
-                                  "body": {"imageName": previous_image},
-                                  "then": "read full endpoint and template"})
+                restored = bridge("restore_endpoint_image", {"id": endpoint_id,
+                                  "body": {"image": previous_image},
+                                  "then": "get_endpoint plus endpoint_health after update_endpoint"})
                 readback_matches(before, restored, endpoint_id, previous_image)
                 validate_snapshot(restored, endpoint_id, idle=True)
                 receipt.update(status="rolled_back", rollback_sha256=checksum(restored))

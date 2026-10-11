@@ -62,7 +62,8 @@ authenticated immutable registry blobs, holds a local release lock, durably
 records the complete private provider snapshot, checks there are no queued or
 active jobs, and emits narrow image-only actions for the authorized parent
 agent to perform through RunPod MCP. It accepts private readback evidence and
-checks all other endpoint/template settings are unchanged. It never handles
+checks all other returned endpoint settings are unchanged. It uses current v2
+`update_endpoint` with only `body.image`; templates are not a live update path. It never handles
 RunPod credentials. A failed check requests canary quiescence and rollback to
 the recorded image; a missing acknowledgement stays `rollback_required`.
 Complete the recorded rollback before starting another transaction. Follow

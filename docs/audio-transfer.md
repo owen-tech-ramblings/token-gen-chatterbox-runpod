@@ -6,7 +6,14 @@ file directly in 8 MiB chunks, then send its SHA256, byte count, format and safe
 encoding/processing metadata to `/complete`. Only an acknowledged, verified NAS
 file produces `stored_on_nas: true`. The provider result contains a small
 receipt rather than base64 audio. Network retries repeat the same chunk and
-manifest; they never generate speech again or change audio quality.
+manifest; they never generate speech again or change audio quality. `/complete`
+first durably records the manifest and returns HTTP 202 with `state: verifying`,
+its byte count and SHA256. The worker polls GET on that same URL every two
+seconds, for at most 30 minutes and within the capability expiry. Only HTTP 200
+with matching bytes/SHA256 and `stored_on_nas: true` proves durable original
+storage. A timeout reports pending verification; the API can finish or recover
+verification after a restart without another generation. Explicit speed
+processing is separate and cannot delay or invalidate that original-byte ACK.
 
 The capability has `url`, `token`, `chunk_bytes: 8388608` and a per-request
 `max_bytes` no larger than 805306368 (768 MiB). URLs must use the canonical

@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 CHUNK_BYTES = 8 * 1024 * 1024
 MAX_AUDIO_BYTES = 768 * 1024 * 1024
 MAX_REFERENCE_BYTES = 10 * 1024 * 1024
+VERIFY_TIMEOUT_SECONDS = 1800
 _BASE = re.compile(r"/api/tts/worker-transfers/(?:owner|user-[a-f0-9]{32})/[a-f0-9]{32}")
 _TOKEN = re.compile(r"([0-9]{10})\.[a-f0-9]{64}")
 _HASH = re.compile(r"[a-f0-9]{64}")
@@ -44,7 +45,7 @@ def validate_transfer(value):
     return value
 
 
-def _request(transfer, method, suffix, body=None, *, limit=4096, binary=False):
+def _request(transfer, method, suffix, body=None, *, limit=4096, binary=False, allow_pending=False):
     opener = build_opener(NoRedirect())
     for attempt in range(3):
         validate_transfer(transfer)
@@ -53,7 +54,7 @@ def _request(transfer, method, suffix, body=None, *, limit=4096, binary=False):
                                    "Content-Type": "application/octet-stream" if method == "PUT" else "application/json"})
         try:
             with opener.open(request, timeout=60) as response:
-                if response.status != 200:
+                if response.status != 200 and not (allow_pending and response.status == 202):
                     raise TransferError("audio_transfer_rejected")
                 payload = response.read(limit + 1)
                 if len(payload) > limit:
@@ -63,6 +64,8 @@ def _request(transfer, method, suffix, body=None, *, limit=4096, binary=False):
                 result = json.loads(payload)
                 if not isinstance(result, dict) or result.get("ok") is not True:
                     raise TransferError("audio_transfer_invalid_ack")
+                if allow_pending:
+                    result["_http_status"] = response.status
                 return result
         except HTTPError as exc:
             retryable = exc.code in (408, 429) or 500 <= exc.code <= 599
@@ -112,7 +115,18 @@ def upload_audio(path, transfer, metadata):
     body = json.dumps(manifest, allow_nan=False, separators=(",", ":")).encode()
     if len(body) > 4096:
         raise TransferError("audio_transfer_manifest_too_large")
-    ack = _request(transfer, "POST", "/complete", body)
+    deadline = time.monotonic() + VERIFY_TIMEOUT_SECONDS
+    ack = _request(transfer, "POST", "/complete", body, allow_pending=True)
+    while ack.get("_http_status") == 202:
+        if (ack.get("stored_on_nas") is True or ack.get("state") != "verifying"
+                or ack.get("sha256") != manifest["sha256"] or ack.get("bytes") != size):
+            raise TransferError("audio_transfer_invalid_ack")
+        if time.monotonic() >= deadline:
+            raise TransferError("audio_transfer_verification_pending")
+        time.sleep(2)
+        # Poll the same durably admitted upload. Never resubmit generation or
+        # interpret acceptance as proof that the original reached NAS.
+        ack = _request(transfer, "GET", "/complete", allow_pending=True)
     if ack.get("stored_on_nas") is not True or ack.get("sha256") != manifest["sha256"] or ack.get("bytes") != size:
         raise TransferError("audio_transfer_invalid_ack")
     return {**metadata, "stored_on_nas": True, "bytes": size, "sha256": manifest["sha256"]}

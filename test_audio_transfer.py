@@ -51,7 +51,7 @@ class AudioTransferTests(unittest.TestCase):
         import audio_transfer as transfer
         cap = capability()
         contents = b"original-float-wave-bytes" * 400000
-        received, requests = {}, []
+        received, requests, pending = {}, [], []
         reference = b"original-lossless-reference"
         reference_info = {"url": cap["url"] + "/reference", "format": "wav",
                           "bytes": len(reference), "sha256": hashlib.sha256(reference).hexdigest()}
@@ -63,7 +63,11 @@ class AudioTransferTests(unittest.TestCase):
                 self.assertEqual(request.get_header("Authorization"), "Bearer " + cap["token"])
                 self.assertEqual(timeout, 60)
                 if request.method == "GET":
-                    return Response(reference)
+                    if request.full_url.endswith("/reference"):
+                        return Response(reference)
+                    result = Response(json.dumps(pending.pop(0)).encode())
+                    result.status = 202 if pending else 200
+                    return result
                 if request.method == "PUT":
                     index = int(request.full_url.rsplit("/", 1)[1])
                     if index in received:
@@ -76,13 +80,18 @@ class AudioTransferTests(unittest.TestCase):
                 assembled = b"".join(received[i] for i in range(manifest["chunks"]))
                 self.assertEqual(assembled, contents)
                 self.assertEqual(manifest["sha256"], hashlib.sha256(assembled).hexdigest())
-                return Response(json.dumps({"ok": True, "stored_on_nas": True,
-                                           "sha256": manifest["sha256"], "bytes": len(assembled)}).encode())
+                pending.extend([{"ok": True, "state": "verifying", "bytes": len(assembled), "sha256": manifest["sha256"]},
+                                {"ok": True, "stored_on_nas": True, "bytes": len(assembled), "sha256": manifest["sha256"]}])
+                result = Response(json.dumps(pending[0]).encode())
+                result.status = 202
+                return result
         with tempfile.TemporaryDirectory() as directory, patch.object(transfer, "build_opener", return_value=Opener()), patch.object(transfer.time, "sleep"):
             path = Path(directory) / "native.wav"
             path.write_bytes(contents)
             result = transfer.upload_audio(path, cap, {"output_format": "wav", "native_audio_preserved": True})
             self.assertTrue(result["stored_on_nas"])
+            self.assertEqual(sum(r.method == "POST" for r in requests), 1)
+            self.assertEqual(sum(r.method == "GET" for r in requests), 2)
             self.assertEqual([r.full_url for r in requests[:2]], [cap["url"] + "/chunks/0"] * 2)
             self.assertEqual(transfer.download_reference({"transfer": cap, "reference_download": reference_info}), (reference, ".wav"))
             with self.assertRaises(transfer.TransferError):

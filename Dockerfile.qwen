@@ -83,7 +83,7 @@ RUN --mount=type=bind,target=/source \
         test_native_audio.NativeAudioTests.test_native_wav_preserves_samples_for_all_modes \
         test_native_audio.NativeAudioTests.test_explicit_encodings_and_mastering_remain_available \
         test_native_audio.NativeAudioTests.test_audio_validation_and_inline_limit_fail_without_fallback \
-        test_qwen_handler.QwenHandlerTests.test_blackwell_cuda_preflight_precedes_model_loading \
+        test_local_release.LocalReleaseTests.test_cutover_preserves_provider_configuration_and_verifies_rollback \
         test_universal_image.UniversalImageContractTests.test_workflow_is_master_only_rootless_and_commit_addressed
 
 # Pin and bake the complete public model so scale-to-zero cold starts never

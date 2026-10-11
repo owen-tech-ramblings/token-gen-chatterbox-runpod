@@ -15,7 +15,15 @@ keys, voice recordings, generated audio, provider responses, or runtime state.
 - Approved secret locators: Google Secret Manager project `lil-zen-oc` and
   `D:\openclaw` (`/mnt/d/openclaw` in WSL) only
 
-Before planning or editing, use the installed
+Owner-authorized local authoring is supported in an isolated clean GitHub
+checkout under `/home/zenfree/codex` or another ecosystem device. OpenClaw PC or
+SSH availability is not a prerequisite. The live API/runtime remains a release
+target, never an authoring checkout. Existing owner authorization takes
+precedence over host-specific authoring paths; never fabricate a managed
+context receipt to make local work appear to run on another host.
+
+When operating through the OpenClaw control plane, before planning or editing
+use the installed
 `openclaw-enhancement-coding-guide` skill and read its complete generated
 context package. Create only a receipt-bound managed `codex/*` worktree with
 `openclaw_managed_worktree.py`. Start from aligned local and origin `dev` and
@@ -48,7 +56,20 @@ weights. Never install or select a different framework at worker runtime.
 
 ## Live deployment and rollback
 
-The live deployment path is the registered `token-gen-chatterbox-runpod`
+The owner-local path uses the clean reviewed exact GitHub `master` commit and
+`scripts/release_native_audio.py`. It verifies successful exact-commit CI and
+authenticated immutable registry blobs, holds a local release lock, durably
+records the complete private provider snapshot, checks there are no queued or
+active jobs, and emits narrow image-only actions for the authorized parent
+agent to perform through RunPod MCP. It accepts private readback evidence and
+checks all other endpoint/template settings are unchanged. It never handles
+RunPod credentials. A failed check requests canary quiescence and rollback to
+the recorded image; a missing acknowledgement stays `rollback_required`.
+Complete the recorded rollback before starting another transaction. Follow
+`docs/local-image-release.md`; keep all snapshots/receipts outside this public
+repository. Align canonical source and `dev` only after verified success.
+
+The registered control-plane path remains the `token-gen-chatterbox-runpod`
 release scope in the Lil Zen control plane. Run its release gate, then invoke
 `platform-ops/scripts/openclaw_runpod_image_release_cutover.py` from the exact
 released control-plane source with the reviewed image commit and its valid
@@ -64,13 +85,14 @@ manual console edit is drift and is not a rollback or deployment path.
 
 ## Forbidden actions
 
-- Do not edit the RunPod endpoint or template directly in the console, API, or
-  an ad hoc script.
+- Do not edit the RunPod endpoint or template outside the reviewed owner-local
+  transaction or registered control-plane transaction. Authenticated MCP
+  performs only the exact action emitted by the active local transaction.
 - Do not deploy mutable tags such as `latest`, `main`, `master`, or `dev`.
 - Do not use GitHub-hosted runners, broad test discovery, or duplicated CI
   triggers for governed production changes.
-- Do not release from a dirty, unleased, noncanonical, runtime, or similarly
-  named checkout.
+- Do not release from a dirty, unreviewed, unlocked, unexpected-origin,
+  runtime, or similarly named checkout.
 - Do not commit credentials or read them from repository files, environment
   examples, command arguments, logs, or release records.
 - Do not change global GitHub authentication to make a command pass.

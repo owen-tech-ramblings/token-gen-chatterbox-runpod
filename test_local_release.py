@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 import release_native_audio as release
@@ -62,3 +63,12 @@ class LocalReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, self.assertRaises(release.ReleaseError):
             release.transaction(Path(temporary), "synthetic-endpoint", busy, proof, {},
                                 lambda *_: self.fail("Busy endpoint must not reach MCP mutation"))
+        with tempfile.TemporaryDirectory() as temporary:
+            nested = Path(temporary) / "state" / "receipts"
+            with patch.object(release.os, "fsync", side_effect=OSError("simulated directory barrier failure")), self.assertRaises(OSError):
+                release.durable_mkdir(nested)
+            self.assertTrue(nested.is_dir())
+            real_fsync = release.os.fsync
+            with patch.object(release.os, "fsync", wraps=real_fsync) as barriers:
+                release.durable_mkdir(nested)
+            self.assertGreaterEqual(barriers.call_count, 3)

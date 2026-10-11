@@ -18,6 +18,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 
 from registry_proof import IMAGE_REPOSITORY, REPOSITORY, verify_image
 
@@ -131,7 +132,7 @@ def validate_canary(value, commit):
         raise ReleaseError("Info canary does not attest the native image contract")
 
 
-def transaction(directory, endpoint_id, before, proof, ci, bridge):
+def transaction(directory, endpoint_id, before, proof, ci, bridge, *, active_path=None):
     image = proof["image"]
     previous_image = validate_snapshot(before, endpoint_id, idle=True)
     before_hash = checksum(before)
@@ -144,6 +145,8 @@ def transaction(directory, endpoint_id, before, proof, ci, bridge):
                "registry_proof_sha256": checksum(proof), "ci": ci,
                "started_at": datetime.now(timezone.utc).isoformat(), "status": "prepared"}
     durable_json(receipt_path, receipt)
+    if active_path is not None:
+        durable_json(active_path, {"receipt": str(receipt_path)})
     mutation_started = False
     try:
         # Refresh under the held local lock immediately before emitting PATCH.
@@ -258,12 +261,11 @@ def main():
             raise ReleaseError("Exact native image master CI must have succeeded")
         proof = verify_image(args.image_commit)
         proof["controller_commit"] = args.source_commit
-        directory = state_root / (args.image_commit + "-" + args.source_commit[:12])
+        directory = state_root / (args.image_commit + "-" + uuid.uuid4().hex)
         directory.mkdir(mode=0o700, exist_ok=False)
         durable_mkdir(directory)
         durable_json(directory / "registry-proof.json", proof)
-        durable_json(active_path, {"receipt": str(directory / "receipt.json")})
-        result = transaction(directory, args.endpoint_id, private_json(args.provider_before), proof, ci, mcp_bridge)
+        result = transaction(directory, args.endpoint_id, private_json(args.provider_before), proof, ci, mcp_bridge, active_path=active_path)
         print(json.dumps({"status": result["status"], "receipt": str(directory / "receipt.json")}), flush=True)
     finally:
         os.close(descriptor)

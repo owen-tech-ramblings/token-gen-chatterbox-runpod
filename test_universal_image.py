@@ -57,6 +57,11 @@ class UniversalImageContractTests(unittest.TestCase):
         self.assertIn("build-arg:SOURCE_COMMIT=${GITHUB_SHA}", workflow)
         self.assertIn("for push_attempt in 1 2 3", workflow)
         self.assertIn("immutable image push failed after 3 attempts", workflow)
+        dockerfile = (ROOT / "Dockerfile.qwen").read_text(encoding="utf-8")
+        self.assertIn("RUN --mount=type=bind,target=/source", dockerfile)
+        self.assertIn("PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/source", dockerfile)
+        self.assertEqual(len(re.findall(r"test_\w+\.\w+\.test_\w+", dockerfile)), 5)
+        self.assertLess(dockerfile.index("test_native_audio."), dockerfile.index("snapshot_download"))
         for legacy in (
             "publish.yml",
             "publish-qwen.yml",

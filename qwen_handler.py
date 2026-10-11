@@ -38,7 +38,7 @@ MAX_REFERENCE_BYTES = int(
 )
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(14 * 1024 * 1024)))
 DEFAULT_QUALITY_PRESET = os.getenv(
-    "DEFAULT_QUALITY_PRESET", "publication"
+    "DEFAULT_QUALITY_PRESET", "native"
 ).strip().lower()
 REQUIRED_COMPILED_CUDA_ARCHITECTURES = (
     "sm_80",
@@ -56,10 +56,17 @@ SUPPORTED_COMPUTE_CAPABILITIES = (
     "sm_120",
 )
 
-# The balanced preset follows Qwen's published generation defaults. Publication
-# reduces randomness modestly and masters the result without suppressing natural
-# prosody; expressive leaves more variation for character work.
+# Native follows the pinned Qwen model generation configuration. Other
+# presets are explicit style choices; output mastering is selected separately.
 QUALITY_PRESETS = {
+    "native": {
+        "temperature": 0.9,
+        "top_p": 1.0,
+        "top_k": 50,
+        "repetition_penalty": 1.05,
+        "max_segment_chars": 600,
+        "segment_pause_ms": 110,
+    },
     "publication": {
         "temperature": 0.80,
         "top_p": 0.95,
@@ -67,7 +74,6 @@ QUALITY_PRESETS = {
         "repetition_penalty": 1.05,
         "max_segment_chars": 420,
         "segment_pause_ms": 120,
-        "master_output": True,
     },
     "balanced": {
         "temperature": 0.90,
@@ -76,7 +82,6 @@ QUALITY_PRESETS = {
         "repetition_penalty": 1.05,
         "max_segment_chars": 600,
         "segment_pause_ms": 110,
-        "master_output": False,
     },
     "expressive": {
         "temperature": 0.95,
@@ -85,11 +90,10 @@ QUALITY_PRESETS = {
         "repetition_penalty": 1.05,
         "max_segment_chars": 420,
         "segment_pause_ms": 100,
-        "master_output": False,
     },
 }
 if DEFAULT_QUALITY_PRESET not in QUALITY_PRESETS:
-    DEFAULT_QUALITY_PRESET = "publication"
+    DEFAULT_QUALITY_PRESET = "native"
 
 _runtime: QwenRuntime | None = None
 _runtime_lock = threading.Lock()
@@ -510,9 +514,20 @@ def _save_wave(waveform: Any, sample_rate: int, path: Path) -> float:
         raise RuntimeError("model returned invalid audio")
     if not np.isfinite(samples).all():
         raise RuntimeError("model returned non-finite audio samples")
-    samples = np.clip(samples, -1.0, 1.0)
-    soundfile.write(path, samples, sample_rate, format="WAV", subtype="PCM_16")
+    soundfile.write(path, samples, sample_rate, format="WAV", subtype="FLOAT")
     return float(samples.size / sample_rate)
+
+
+def _encode_pcm16(wave_path: Path) -> None:
+    """Quantise only when the caller explicitly requests compatibility PCM16."""
+    import numpy as np
+    import soundfile
+
+    samples, sample_rate = soundfile.read(wave_path, dtype="float32")
+    converted = wave_path.with_name("pcm16.wav")
+    soundfile.write(converted, np.clip(samples, -1.0, 1.0), sample_rate,
+                    format="WAV", subtype="PCM_16")
+    converted.replace(wave_path)
 
 
 def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
@@ -566,7 +581,7 @@ def _master_wave(wave_path: Path, sample_rate: int) -> None:
                 "-ac",
                 "1",
                 "-codec:a",
-                "pcm_s16le",
+                "pcm_f32le",
                 str(mastered_path),
             ],
             check=True,
@@ -621,6 +636,10 @@ def _info(runtime: QwenRuntime) -> dict[str, Any]:
         "output_formats": list(_OUTPUT_FORMATS),
         "default_quality_preset": DEFAULT_QUALITY_PRESET,
         "quality_presets": list(QUALITY_PRESETS),
+        "default_wav_encoding": "float32",
+        "wav_encodings": ["float32", "pcm16"],
+        "default_mastering": "native",
+        "mastering_modes": ["native", "podcast_mono_-19_lufs"],
     }
 
 
@@ -649,7 +668,7 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
     preset = QUALITY_PRESETS.get(preset_name)
     if preset is None:
         raise InputError(
-            "quality_preset must be publication, balanced, or expressive"
+            "quality_preset must be native, publication, balanced, or expressive"
         )
 
     seed = _integer(data, "seed", 0, 0, 2_147_483_647)
@@ -667,6 +686,15 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
     output_format = output_format.lower().lstrip(".")
     if output_format not in _OUTPUT_FORMATS:
         raise InputError("output_format must be 'wav' or 'mp3'")
+
+    wav_encoding = data.get("wav_encoding", "float32")
+    if not isinstance(wav_encoding, str) or wav_encoding not in {"float32", "pcm16"}:
+        raise InputError("wav_encoding must be 'float32' or 'pcm16'")
+    if output_format != "wav" and wav_encoding != "float32":
+        raise InputError("wav_encoding='pcm16' requires output_format='wav'")
+    mastering = data.get("mastering", "native")
+    if not isinstance(mastering, str) or mastering not in {"native", "podcast_mono_-19_lufs"}:
+        raise InputError("mastering must be 'native' or 'podcast_mono_-19_lufs'")
 
     reference = None
     reference_text = None
@@ -745,8 +773,10 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
 
         wave_path = temp_path / "output.wav"
         duration = _save_wave(waveform, runtime.sample_rate, wave_path)
-        if preset["master_output"]:
+        if mastering != "native":
             _master_wave(wave_path, runtime.sample_rate)
+        if output_format == "wav" and wav_encoding == "pcm16":
+            _encode_pcm16(wave_path)
         mime_type, extension = _OUTPUT_FORMATS[output_format]
         output_path = temp_path / f"output{extension}"
         if output_format == "mp3":
@@ -779,7 +809,11 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
         "segment_count": len(
             split_text_segments(text, preset["max_segment_chars"])
         ),
-        "mastering": "podcast_mono_-19_lufs" if preset["master_output"] else None,
+        "mastering": mastering if mastering != "native" else None,
+        "wav_encoding": wav_encoding if output_format == "wav" else None,
+        "audio_encoding": ("pcm_f32le" if wav_encoding == "float32" else "pcm_s16le") if output_format == "wav" else "mp3",
+        "bit_depth": (32 if wav_encoding == "float32" else 16) if output_format == "wav" else None,
+        "native_audio_preserved": output_format == "wav" and wav_encoding == "float32" and mastering == "native",
         "used_reference_voice": runtime.variant == "base",
         "reference_text_used": bool(reference_text),
         "clone_mode": clone_mode,

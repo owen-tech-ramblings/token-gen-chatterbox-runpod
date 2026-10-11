@@ -201,7 +201,7 @@ class QwenHandlerTests(unittest.TestCase):
         self.assertFalse(call[4]["x_vector_only_mode"])
         self.assertEqual(result["clone_mode"], "exact_transcript")
         self.assertTrue(result["reference_text_used"])
-        self.master_wave.assert_called_once()
+        self.master_wave.assert_not_called()
 
     @patch("qwen_handler._save_wave", fake_save_wave)
     def test_legacy_reference_uses_reduced_quality_embedding_mode(self) -> None:

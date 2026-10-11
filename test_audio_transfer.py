@@ -61,6 +61,7 @@ class AudioTransferTests(unittest.TestCase):
             def open(inner, request, timeout):
                 requests.append(request)
                 self.assertEqual(request.get_header("Authorization"), "Bearer " + cap["token"])
+                self.assertEqual(request.get_header("User-agent"), "Token-Gen-AudioTransfer/1.0")
                 self.assertEqual(timeout, 60)
                 if request.method == "GET":
                     if request.full_url.endswith("/reference"):

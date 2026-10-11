@@ -51,6 +51,7 @@ def _request(transfer, method, suffix, body=None, *, limit=4096, binary=False, a
         validate_transfer(transfer)
         request = Request(transfer["url"] + suffix, method=method, data=body,
                           headers={"Authorization": "Bearer " + transfer["token"],
+                                   "User-Agent": "Token-Gen-AudioTransfer/1.0",
                                    "Content-Type": "application/octet-stream" if method == "PUT" else "application/json"})
         try:
             with opener.open(request, timeout=60) as response:

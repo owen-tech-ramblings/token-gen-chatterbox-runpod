@@ -39,7 +39,6 @@ RUN python3 -m pip install --requirement requirements.txt
 RUN TRANSFORMERS_OFFLINE=0 python3 -c \
     "from huggingface_hub import snapshot_download; snapshot_download(repo_id='ResembleAI/chatterbox-turbo', allow_patterns=['*.safetensors', '*.json', '*.txt', '*.pt', '*.model'])"
 
-COPY handler.py .
+COPY handler.py audio_transfer.py .
 
 CMD ["python3", "-u", "handler.py"]
-

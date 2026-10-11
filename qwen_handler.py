@@ -122,6 +122,9 @@ _OUTPUT_FORMATS = {
 }
 
 
+from audio_transfer import download_reference, upload_audio, validate_transfer
+
+
 class InputError(ValueError):
     """Raised when a request cannot be safely processed."""
 
@@ -453,6 +456,8 @@ def _parse_data_url(value: str) -> tuple[str, str]:
 
 
 def decode_reference(data: dict[str, Any]) -> tuple[bytes, str] | None:
+    if "reference_download" in data:
+        return download_reference(data)
     value = data.get("reference_audio")
     if value is None:
         return None
@@ -598,6 +603,8 @@ def _master_wave(wave_path: Path, sample_rate: int) -> None:
 
 def _info(runtime: QwenRuntime) -> dict[str, Any]:
     return {
+        "source_commit": os.getenv("WORKER_SOURCE_COMMIT", "local-check"),
+        "audio_transfer": {"version": 1, "chunk_bytes": 8 * 1024 * 1024, "max_bytes": 768 * 1024 * 1024},
         "model": MODEL_LABEL,
         "model_id": MODEL_ID,
         "model_variant": runtime.variant,
@@ -738,6 +745,8 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
                 f"{MAX_VOICE_DESCRIPTION_CHARS} characters"
             )
 
+    transfer = validate_transfer(data["transfer"]) if "transfer" in data else None
+
     with tempfile.TemporaryDirectory(prefix="qwen3-tts-job-") as temp_dir:
         temp_path = Path(temp_dir)
         with _generation_lock:
@@ -781,44 +790,38 @@ def handle_input(data: dict[str, Any], runtime: QwenRuntime) -> dict[str, Any]:
         output_path = temp_path / f"output{extension}"
         if output_format == "mp3":
             _encode_mp3(wave_path, output_path)
+        clone_mode = ("speaker_embedding" if x_vector_only_mode else "exact_transcript") if runtime.variant == "base" else None
+        result = {
+            "mime_type": mime_type,
+            "output_format": output_format,
+            "sample_rate": runtime.sample_rate,
+            "duration_seconds": round(duration, 3),
+            "model": MODEL_LABEL,
+            "model_id": MODEL_ID,
+            "model_variant": runtime.variant,
+            "seed": seed,
+            "quality_preset": preset_name,
+            "segment_count": len(
+                split_text_segments(text, preset["max_segment_chars"])
+            ),
+            "mastering": mastering if mastering != "native" else None,
+            "wav_encoding": wav_encoding if output_format == "wav" else None,
+            "audio_encoding": ("pcm_f32le" if wav_encoding == "float32" else "pcm_s16le") if output_format == "wav" else "mp3",
+            "bit_depth": (32 if wav_encoding == "float32" else 16) if output_format == "wav" else None,
+            "native_audio_preserved": output_format == "wav" and wav_encoding == "float32" and mastering == "native",
+            "used_reference_voice": runtime.variant == "base",
+            "reference_text_used": bool(reference_text),
+            "clone_mode": clone_mode,
+            "watermarked": False,
+        }
+
+        if transfer is not None:
+            return upload_audio(output_path, transfer, result)
+        if output_path.stat().st_size > MAX_AUDIO_BYTES:
+            raise RuntimeError("generated audio is too large for an inline RunPod response; use authenticated audio transfer")
         audio = output_path.read_bytes()
-
-    if len(audio) > MAX_AUDIO_BYTES:
-        raise RuntimeError(
-            "generated audio is too large for an inline RunPod response; "
-            "split the text into shorter chunks"
-        )
-
-    clone_mode = None
-    if runtime.variant == "base":
-        clone_mode = (
-            "speaker_embedding" if x_vector_only_mode else "exact_transcript"
-        )
-    return {
-        "audio_base64": base64.b64encode(audio).decode("ascii"),
-        "mime_type": mime_type,
-        "output_format": output_format,
-        "sample_rate": runtime.sample_rate,
-        "duration_seconds": round(duration, 3),
-        "sha256": hashlib.sha256(audio).hexdigest(),
-        "model": MODEL_LABEL,
-        "model_id": MODEL_ID,
-        "model_variant": runtime.variant,
-        "seed": seed,
-        "quality_preset": preset_name,
-        "segment_count": len(
-            split_text_segments(text, preset["max_segment_chars"])
-        ),
-        "mastering": mastering if mastering != "native" else None,
-        "wav_encoding": wav_encoding if output_format == "wav" else None,
-        "audio_encoding": ("pcm_f32le" if wav_encoding == "float32" else "pcm_s16le") if output_format == "wav" else "mp3",
-        "bit_depth": (32 if wav_encoding == "float32" else 16) if output_format == "wav" else None,
-        "native_audio_preserved": output_format == "wav" and wav_encoding == "float32" and mastering == "native",
-        "used_reference_voice": runtime.variant == "base",
-        "reference_text_used": bool(reference_text),
-        "clone_mode": clone_mode,
-        "watermarked": False,
-    }
+        return {**result, "audio_base64": base64.b64encode(audio).decode("ascii"),
+                "sha256": hashlib.sha256(audio).hexdigest()}
 
 
 def handler(job: dict[str, Any]) -> dict[str, Any]:

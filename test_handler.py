@@ -44,7 +44,7 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(result["model"], "chatterbox-turbo")
         self.assertEqual(result["gpu"], "Fake GPU")
         self.assertTrue(result["voice_cloning"])
-        self.assertEqual(result["default_quality_preset"], "publication")
+        self.assertEqual(result["default_quality_preset"], "native")
         self.assertIn("publication", result["quality_presets"])
 
     @patch("handler._save_wave", fake_save_wave)
@@ -58,10 +58,10 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(result["output_format"], "wav")
         self.assertFalse(result["used_reference_voice"])
         self.assertEqual(self.runtime.calls[0][2]["seed"], 42)
-        self.assertEqual(result["quality_preset"], "publication")
-        self.assertEqual(self.runtime.calls[0][2]["temperature"], 0.65)
-        self.assertEqual(result["mastering"], "podcast_mono_-19_lufs")
-        self.master_wave.assert_called_once()
+        self.assertEqual(result["quality_preset"], "native")
+        self.assertEqual(self.runtime.calls[0][2]["temperature"], 0.8)
+        self.assertIsNone(result["mastering"])
+        self.master_wave.assert_not_called()
 
     @patch("handler._encode_mp3", fake_encode_mp3)
     @patch("handler._save_wave", fake_save_wave)

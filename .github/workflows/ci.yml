@@ -16,11 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run targeted universal-image tests
-        run: >-
-          python3 -m unittest -v
-          test_universal_image.UniversalImageContractTests.test_workflow_is_master_only_rootless_and_commit_addressed
-
+      # Dockerfile.qwen runs the five selected offline checks using the exact
+      # image dependencies before downloading models or publishing its image.
       - name: Build and publish immutable Qwen Base image
         shell: bash
         env:

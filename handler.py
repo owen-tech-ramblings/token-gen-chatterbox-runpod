@@ -19,12 +19,20 @@ MODEL_LABEL = "chatterbox-turbo"
 MAX_TEXT_CHARS = int(os.getenv("MAX_TEXT_CHARS", "2000"))
 MAX_REFERENCE_BYTES = int(os.getenv("MAX_REFERENCE_BYTES", str(10 * 1024 * 1024)))
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(14 * 1024 * 1024)))
-DEFAULT_QUALITY_PRESET = os.getenv("DEFAULT_QUALITY_PRESET", "publication").strip().lower()
+DEFAULT_QUALITY_PRESET = os.getenv("DEFAULT_QUALITY_PRESET", "native").strip().lower()
 
-# Turbo is a stochastic speech-token model. Its upstream defaults are useful for
-# expressive agents, but a less adventurous sampling envelope and shorter
-# sentence-aware segments are safer for narration that may be published.
+# Native uses Chatterbox Turbo 0.1.7 sampling defaults. Other presets are
+# explicit style choices, not an ordered quality scale. Mastering is separate.
 QUALITY_PRESETS = {
+    "native": {
+        "temperature": 0.8,
+        "top_p": 0.95,
+        "top_k": 1000,
+        "repetition_penalty": 1.2,
+        "normalize_loudness": True,
+        "max_segment_chars": 700,
+        "segment_pause_ms": 120,
+    },
     "publication": {
         "temperature": 0.65,
         "top_p": 0.90,
@@ -33,7 +41,6 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 360,
         "segment_pause_ms": 140,
-        "master_output": True,
     },
     "balanced": {
         "temperature": 0.80,
@@ -43,7 +50,6 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 700,
         "segment_pause_ms": 120,
-        "master_output": False,
     },
     "expressive": {
         "temperature": 0.90,
@@ -53,11 +59,10 @@ QUALITY_PRESETS = {
         "normalize_loudness": True,
         "max_segment_chars": 360,
         "segment_pause_ms": 120,
-        "master_output": False,
     },
 }
 if DEFAULT_QUALITY_PRESET not in QUALITY_PRESETS:
-    DEFAULT_QUALITY_PRESET = "publication"
+    DEFAULT_QUALITY_PRESET = "native"
 
 _runtime: ChatterboxRuntime | None = None
 _runtime_lock = threading.Lock()
@@ -332,9 +337,20 @@ def _save_wave(waveform: Any, sample_rate: int, path: Path) -> float:
         raise RuntimeError("model returned an invalid audio tensor")
     if not np.isfinite(samples).all():
         raise RuntimeError("model returned non-finite audio samples")
-    samples = np.clip(samples, -1.0, 1.0)
-    soundfile.write(path, samples, sample_rate, format="WAV", subtype="PCM_16")
+    soundfile.write(path, samples, sample_rate, format="WAV", subtype="FLOAT")
     return float(samples.size / sample_rate)
+
+
+def _encode_pcm16(wave_path: Path) -> None:
+    """Quantise only when the caller explicitly requests compatibility PCM16."""
+    import numpy as np
+    import soundfile
+
+    samples, sample_rate = soundfile.read(wave_path, dtype="float32")
+    converted = wave_path.with_name("pcm16.wav")
+    soundfile.write(converted, np.clip(samples, -1.0, 1.0), sample_rate,
+                    format="WAV", subtype="PCM_16")
+    converted.replace(wave_path)
 
 
 def _encode_mp3(wave_path: Path, mp3_path: Path) -> None:
@@ -394,7 +410,7 @@ def _master_wave(wave_path: Path, sample_rate: int) -> None:
                 "-ac",
                 "1",
                 "-codec:a",
-                "pcm_s16le",
+                "pcm_f32le",
                 str(mastered_path),
             ],
             check=True,
@@ -425,6 +441,10 @@ def _info(runtime: ChatterboxRuntime) -> dict[str, Any]:
         "output_formats": list(_OUTPUT_FORMATS),
         "default_quality_preset": DEFAULT_QUALITY_PRESET,
         "quality_presets": list(QUALITY_PRESETS),
+        "default_wav_encoding": "float32",
+        "wav_encodings": ["float32", "pcm16"],
+        "default_mastering": "native",
+        "mastering_modes": ["native", "podcast_mono_-19_lufs"],
     }
 
 
@@ -473,6 +493,15 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
     if output_format not in _OUTPUT_FORMATS:
         raise InputError("output_format must be 'wav' or 'mp3'")
 
+    wav_encoding = data.get("wav_encoding", "float32")
+    if not isinstance(wav_encoding, str) or wav_encoding not in {"float32", "pcm16"}:
+        raise InputError("wav_encoding must be 'float32' or 'pcm16'")
+    if output_format != "wav" and wav_encoding != "float32":
+        raise InputError("wav_encoding='pcm16' requires output_format='wav'")
+    mastering = data.get("mastering", "native")
+    if not isinstance(mastering, str) or mastering not in {"native", "podcast_mono_-19_lufs"}:
+        raise InputError("mastering must be 'native' or 'podcast_mono_-19_lufs'")
+
     with tempfile.TemporaryDirectory(prefix="chatterbox-job-") as temp_dir:
         temp_path = Path(temp_dir)
         reference_path: Path | None = None
@@ -496,8 +525,10 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
                 segment_pause_ms=preset["segment_pause_ms"],
             )
         duration = _save_wave(waveform, runtime.sample_rate, wave_path)
-        if preset["master_output"]:
+        if mastering != "native":
             _master_wave(wave_path, runtime.sample_rate)
+        if output_format == "wav" and wav_encoding == "pcm16":
+            _encode_pcm16(wave_path)
         mime_type, extension = _OUTPUT_FORMATS[output_format]
         output_path = temp_path / f"output{extension}"
         if output_format == "mp3":
@@ -521,7 +552,11 @@ def handle_input(data: dict[str, Any], runtime: ChatterboxRuntime) -> dict[str, 
         "seed": seed,
         "quality_preset": preset_name,
         "segment_count": len(split_text_segments(text, preset["max_segment_chars"])),
-        "mastering": "podcast_mono_-19_lufs" if preset["master_output"] else None,
+        "mastering": mastering if mastering != "native" else None,
+        "wav_encoding": wav_encoding if output_format == "wav" else None,
+        "audio_encoding": ("pcm_f32le" if wav_encoding == "float32" else "pcm_s16le") if output_format == "wav" else "mp3",
+        "bit_depth": (32 if wav_encoding == "float32" else 16) if output_format == "wav" else None,
+        "native_audio_preserved": output_format == "wav" and wav_encoding == "float32" and mastering == "native",
         "used_reference_voice": reference is not None,
         "watermarked": True,
     }
